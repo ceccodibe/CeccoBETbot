@@ -165,13 +165,12 @@ def daily_job():
 
 # ── 8. Scheduler ──────────────────────────────────────────────
 schedule.every().day.at("08:00").do(daily_job)
-send_telegram("🤖 Test bot funzionante!")
-daily_job()
-send_telegram("🤖 Test bot attivo!")
 
 if __name__ == "__main__":
     print("Bot avviato. In attesa delle 08:00...")
     print("Premi Ctrl+C per fermarlo.")
+    send_telegram("🤖 Test bot attivo!")
+    daily_job()
     while True:
         schedule.run_pending()
         time.sleep(60)
