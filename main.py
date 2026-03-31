@@ -12,11 +12,12 @@ client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # ── 1. Partite del giorno ──────────────────────────────────────
 def get_matches():
-    today = datetime.now().strftime("%Y-%m-%d")
+    from datetime import timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
     r = requests.get(url, headers=headers, params={"date": today})
-    return r.json()["response"]
+    return r.json().get("response", [])
 
 # ── 2. Statistiche squadra ─────────────────────────────────────
 def get_team_stats(team_id, league_id, season):
@@ -165,7 +166,7 @@ def daily_job():
 # ── 8. Scheduler ──────────────────────────────────────────────
 schedule.every().day.at("08:00").do(daily_job)
 send_telegram("🤖 Test bot funzionante!")
-daily_job()
+daily_job()send_telegram("🤖 Test bot attivo!")
 
 if __name__ == "__main__":
     print("Bot avviato. In attesa delle 08:00...")
