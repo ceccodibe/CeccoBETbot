@@ -13,7 +13,7 @@ client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 # ── 1. Partite del giorno ──────────────────────────────────────
 def get_matches():
     from datetime import timezone
-    today = datetime.now(timezone.utc).strftime("2026-03-31")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
     r = requests.get(url, headers=headers, params={"date": today})
