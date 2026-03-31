@@ -156,6 +156,7 @@ def daily_job():
 
 # ── 8. Scheduler ──────────────────────────────────────────────
 schedule.every().day.at("08:00").do(daily_job)
+daily_job()
 
 if __name__ == "__main__":
     print("Bot avviato. In attesa delle 08:00...")
