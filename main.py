@@ -43,11 +43,19 @@ def get_odds(home, away):
         "markets": "h2h,totals",
         "oddsFormat": "decimal"
     }
-    r = requests.get(url, params=params)
-    for event in r.json():
-        if home.lower() in event["home_team"].lower() or \
-           away.lower() in event["away_team"].lower():
-            return event.get("bookmakers", [])
+    try:
+        r = requests.get(url, params=params)
+        data = r.json()
+        if not isinstance(data, list):
+            return []
+        for event in data:
+            if not isinstance(event, dict):
+                continue
+            if home.lower() in event.get("home_team","").lower() or \
+               away.lower() in event.get("away_team","").lower():
+                return event.get("bookmakers", [])
+    except:
+        pass
     return []
 
 # ── 5. Analisi AI + Value Bet ─────────────────────────────────
