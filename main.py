@@ -1,5 +1,5 @@
-import os, requests, anthropic, schedule, time, json
-from datetime import datetime, timedelta
+import os, requests, anthropic, schedule, time, json, threading
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,9 +10,10 @@ TG_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT     = os.getenv("TELEGRAM_CHAT_ID")
 client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+last_update_id = 0
+
 # ── 1. Partite del giorno ──────────────────────────────────────
 def get_matches():
-    from datetime import timezone
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
@@ -125,8 +126,15 @@ def format_message(match, analysis):
 # ── 7. Job principale ─────────────────────────────────────────
 def daily_job():
     print(f"[{datetime.now()}] Avvio analisi partite...")
+    send_telegram("🔍 Avvio analisi partite del giorno...")
     matches = get_matches()
     print(f"Trovate {len(matches)} partite oggi.")
+
+    if len(matches) == 0:
+        send_telegram("⚠️ Nessuna partita trovata per oggi.")
+        return
+
+    send_telegram(f"📅 Trovate <b>{len(matches)}</b> partite oggi. Analisi in corso...")
 
     for m in matches:
         fixture_id = m['fixture']['id']
@@ -163,14 +171,37 @@ def daily_job():
         print(f"Inviato: {home_name} vs {away_name}")
         time.sleep(5)
 
-# ── 8. Scheduler ──────────────────────────────────────────────
+# ── 8. Listener comandi Telegram ──────────────────────────────
+def listen_commands():
+    global last_update_id
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
+    while True:
+        try:
+            r = requests.get(url, params={"timeout": 30, "offset": last_update_id + 1}, timeout=35)
+            updates = r.json().get("result", [])
+            for update in updates:
+                last_update_id = update["update_id"]
+                msg = update.get("message", {}) or update.get("channel_post", {})
+                text = msg.get("text", "")
+                if text.strip().lower() in ["/analisi", "/start"]:
+                    print("Comando /analisi ricevuto!")
+                    threading.Thread(target=daily_job).start()
+        except Exception as e:
+            print(f"Errore listener: {e}")
+        time.sleep(2)
+
+# ── 9. Scheduler + avvio ──────────────────────────────────────
 schedule.every().day.at("08:00").do(daily_job)
 
 if __name__ == "__main__":
-    print("Bot avviato. In attesa delle 08:00...")
-    print("Premi Ctrl+C per fermarlo.")
-    send_telegram("🤖 Test bot attivo!")
-    daily_job()
+    print("Bot avviato!")
+    print("Comandi disponibili: /analisi")
+    send_telegram("🤖 Bot avviato! Scrivi /analisi per avviare l'analisi manualmente.")
+
+    # Avvia listener comandi in background
+    t = threading.Thread(target=listen_commands, daemon=True)
+    t.start()
+
     while True:
         schedule.run_pending()
         time.sleep(60)
