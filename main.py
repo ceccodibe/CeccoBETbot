@@ -164,6 +164,7 @@ def daily_job():
 
 # ── 8. Scheduler ──────────────────────────────────────────────
 schedule.every().day.at("08:00").do(daily_job)
+send_telegram("🤖 Test bot funzionante!")
 daily_job()
 
 if __name__ == "__main__":
