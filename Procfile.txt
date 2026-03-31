@@ -1,0 +1,1 @@
+worker: python betting_bot.py
