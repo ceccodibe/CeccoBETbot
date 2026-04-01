@@ -30,16 +30,13 @@ def save_history(history):
 
 # ── 1. Tutte le partite del giorno ───────────────────────────
 def get_matches():
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    today = italy_time.strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
-    all_matches = []
-    for date in [today, tomorrow]:
-        r = requests.get(url, headers=headers, params={"date": date})
-        print(f"Data {date}: {r.json().get('results', 0)} partite — errors: {r.json().get('errors', {})}")
-        all_matches += r.json().get("response", [])
-    return all_matches
+    r = requests.get(url, headers=headers, params={"date": today})
+    print(f"Cerco partite per {today}: {r.json().get('results', 0)} trovate")
+    return r.json().get("response", [])
 
 # ── 2. Partite live (solo da minuto 30 in poi) ────────────────
 def get_live_matches():
