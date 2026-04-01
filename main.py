@@ -28,36 +28,26 @@ def save_history(history):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
-# ── Campionati consentiti (paese, nome lega) ──────────────────
-ALLOWED_LEAGUES = [
-    ("Italy", "Serie A"),
-    ("Italy", "Serie B"),
-    ("England", "Premier League"),
-    ("Spain", "La Liga"),
-    ("Germany", "Bundesliga"),
-    ("France", "Ligue 1"),
-    ("World", "UEFA Champions League"),
-    ("World", "UEFA Europa League"),
-    ("World", "UEFA Europa Conference League"),
-    ("Netherlands", "Eredivisie"),
-    ("Portugal", "Primeira Liga"),
-    ("World", "Friendlies"),
-]
-
-def is_allowed(m):
-    return any(
-        country.lower() in m['league']['country'].lower() and
-        league.lower() in m['league']['name'].lower()
-        for country, league in ALLOWED_LEAGUES
-    )
-
-# ── 1. Partite del giorno ─────────────────────────────────────
+# ── 1. Partite nelle prossime 4 ore ──────────────────────────
 def get_matches():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
     r = requests.get(url, headers=headers, params={"date": today})
-    return [m for m in r.json().get("response", []) if is_allowed(m)]
+    all_matches = r.json().get("response", [])
+
+    now = datetime.now(timezone.utc)
+    limit = now + timedelta(hours=4)
+
+    filtered = []
+    for m in all_matches:
+        try:
+            kick = datetime.fromisoformat(m['fixture']['date'].replace('Z', '+00:00'))
+            if now <= kick <= limit:
+                filtered.append(m)
+        except:
+            pass
+    return filtered
 
 # ── 2. Partite live (solo da minuto 30 in poi) ────────────────
 def get_live_matches():
@@ -67,8 +57,6 @@ def get_live_matches():
     all_matches = r.json().get("response", [])
     filtered = []
     for m in all_matches:
-        if not is_allowed(m):
-            continue
         elapsed = m['fixture']['status'].get('elapsed') or 0
         if elapsed >= 30:
             filtered.append(m)
@@ -179,6 +167,8 @@ def format_message(match, analysis):
         a = {}
     home = match['teams']['home']['name']
     away = match['teams']['away']['name']
+    league = match['league']['name']
+    country = match['league']['country']
     kick_utc = datetime.fromisoformat(match['fixture']['date'].replace('Z','+00:00'))
     kick_it = kick_utc + timedelta(hours=2)
     kickoff = kick_it.strftime("%H:%M")
@@ -186,6 +176,7 @@ def format_message(match, analysis):
     star = "⭐ <b>TOP VALUE BET</b>\n" if confidence >= 70 else ""
     return f"""
 {star}⚽ <b>{home} vs {away}</b>
+🏆 {country} — {league}
 🕐 Calcio d'inizio: {kickoff}
 
 📊 Probabilità stimate:
@@ -208,10 +199,12 @@ def format_live_message(match, analysis):
         a = {}
     home = match['teams']['home']['name']
     away = match['teams']['away']['name']
+    league = match['league']['name']
     score = match['goals']
     minute = match['fixture']['status'].get('elapsed', '?')
     return f"""
 🔴 <b>LIVE — {home} vs {away}</b>
+🏆 {league}
 ⏱ Minuto: {minute}' | Punteggio: {score['home']}-{score['away']}
 
 🎰 <b>Giocata: {a.get('giocata_consigliata','N/A')}</b>
@@ -264,13 +257,16 @@ def analyze_single_live(m):
 def daily_job():
     global stop_analysis
     stop_analysis = False
-    print(f"[{datetime.now()}] Avvio analisi partite...")
-    send_telegram("🔍 Avvio analisi partite del giorno...")
+    now_it = datetime.now(timezone.utc) + timedelta(hours=2)
+    limit_it = now_it + timedelta(hours=4)
+    print(f"[{datetime.now()}] Avvio analisi partite nelle prossime 4 ore...")
+    send_telegram(f"🔍 Cerco partite che iniziano entro le <b>{limit_it.strftime('%H:%M')}</b>...")
+
     matches = get_matches()
     print(f"Trovate {len(matches)} partite.")
 
     if len(matches) == 0:
-        send_telegram("⚠️ Nessuna partita trovata oggi nei campionati selezionati.")
+        send_telegram("⚠️ Nessuna partita trovata nelle prossime 4 ore.")
         return
 
     leagues = group_by_league(matches)
@@ -324,15 +320,7 @@ def daily_job():
                 if confidence >= 70:
                     top_bets.append((confidence, msg))
             except:
-                confidence = 0
-
-            notify_at = kick_utc - timedelta(hours=2)
-            now_aware = datetime.now(kick_utc.tzinfo)
-            delay = (notify_at - now_aware).total_seconds()
-
-            if delay > 0:
-                print(f"Invio tra {int(delay/60)} minuti...")
-                time.sleep(delay)
+                pass
 
             send_telegram(msg)
             print(f"Inviato: {home_name} vs {away_name}")
@@ -342,17 +330,20 @@ def daily_job():
 
     if top_bets:
         top_bets.sort(key=lambda x: x[0], reverse=True)
-        send_telegram("⭐ <b>TOP VALUE BETS DI OGGI (confidence ≥ 70)</b>")
+        send_telegram("⭐ <b>TOP VALUE BETS (confidence ≥ 70)</b>")
         for _, msg in top_bets[:5]:
             send_telegram(msg)
             time.sleep(3)
+
+    send_telegram("✅ <b>Analisi completata!</b>")
 
 # ── 13. Job analisi LIVE in parallelo ─────────────────────────
 def live_job():
     print(f"[{datetime.now()}] Analisi live...")
     matches = get_live_matches()
+
     if not matches:
-        print("Nessuna partita live con almeno 30 minuti giocati.")
+        send_telegram("⚽ Nessuna partita live in corso con almeno 30 minuti giocati.")
         return
 
     send_telegram(f"🔴 <b>{len(matches)} partite live (min. 30') — analisi in corso...</b>")
@@ -370,6 +361,8 @@ def live_job():
     for msg in results:
         send_telegram(msg)
         time.sleep(2)
+
+    send_telegram("✅ <b>Analisi live completata!</b>")
 
 # ── 14. Listener comandi Telegram ─────────────────────────────
 def listen_commands():
@@ -396,8 +389,8 @@ def listen_commands():
                     send_telegram("""
 🤖 <b>Comandi disponibili:</b>
 
-/analisi — Analisi pre-partita
-/live — Giocate live (solo partite al 30'+)
+/analisi — Partite nelle prossime 4 ore
+/live — Giocate live (partite al 30'+)
 /stop — Ferma analisi in corso
 /stats — Statistiche previsioni
 /help — Questo messaggio
@@ -407,14 +400,13 @@ def listen_commands():
         time.sleep(2)
 
 # ── 15. Scheduler + avvio ─────────────────────────────────────
-schedule.every().day.at("08:00").do(daily_job)
 schedule.every(30).minutes.do(live_job)
 
 if __name__ == "__main__":
     print("Bot avviato!")
     send_telegram("""🤖 <b>Bot avviato!</b>
 
-/analisi — Analisi pre-partita
+/analisi — Partite nelle prossime 4 ore
 /live — Giocate live
 /stop — Ferma analisi
 /stats — Statistiche
