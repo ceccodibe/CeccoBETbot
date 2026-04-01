@@ -92,11 +92,12 @@ risultato_esatto, confidence, motivazione (max 3 righe).
 # ── 6. Formatta e invia su Telegram ───────────────────────────
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    requests.post(url, json={
+    r = requests.post(url, json={
         "chat_id": TG_CHAT,
         "text": text,
         "parse_mode": "HTML"
     })
+    print(f"Telegram response: {r.json()}")
 
 def format_message(match, analysis):
     try:
