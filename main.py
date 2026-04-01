@@ -28,30 +28,13 @@ def save_history(history):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
-# ── 1. Partite nelle prossime 4 ore ──────────────────────────
+# ── 1. Tutte le partite del giorno ───────────────────────────
 def get_matches():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
-    
-    all_matches = []
-    for date in [today, tomorrow]:
-        r = requests.get(url, headers=headers, params={"date": date})
-        all_matches += r.json().get("response", [])
-
-    now = datetime.now(timezone.utc)
-    limit = now + timedelta(hours=4)
-
-    filtered = []
-    for m in all_matches:
-        try:
-            kick = datetime.fromisoformat(m['fixture']['date'].replace('Z', '+00:00'))
-            if now <= kick <= limit:
-                filtered.append(m)
-        except:
-            pass
-    return filtered
+    r = requests.get(url, headers=headers, params={"date": today})
+    return r.json().get("response", [])
 
 # ── 2. Partite live (solo da minuto 30 in poi) ────────────────
 def get_live_matches():
@@ -59,27 +42,20 @@ def get_live_matches():
     headers = {"x-apisports-key": APIFOOTBALL}
     r = requests.get(url, headers=headers, params={"live": "all"})
     all_matches = r.json().get("response", [])
-    filtered = []
-    for m in all_matches:
-        elapsed = m['fixture']['status'].get('elapsed') or 0
-        if elapsed >= 30:
-            filtered.append(m)
-    return filtered
+    return [m for m in all_matches if (m['fixture']['status'].get('elapsed') or 0) >= 30]
 
 # ── 3. Statistiche squadra ────────────────────────────────────
 def get_team_stats(team_id, league_id, season):
     url = "https://v3.football.api-sports.io/teams/statistics"
     headers = {"x-apisports-key": APIFOOTBALL}
-    params = {"team": team_id, "league": league_id, "season": season}
-    r = requests.get(url, headers=headers, params=params)
+    r = requests.get(url, headers=headers, params={"team": team_id, "league": league_id, "season": season})
     return r.json().get("response", {})
 
 # ── 4. Infortuni e squalifiche ───────────────────────────────
 def get_injuries(team_id, fixture_id):
     url = "https://v3.football.api-sports.io/injuries"
     headers = {"x-apisports-key": APIFOOTBALL}
-    r = requests.get(url, headers=headers,
-                     params={"team": team_id, "fixture": fixture_id})
+    r = requests.get(url, headers=headers, params={"team": team_id, "fixture": fixture_id})
     return r.json().get("response", [])
 
 # ── 5. Quote bookmaker ────────────────────────────────────────
@@ -102,8 +78,7 @@ def get_odds(home, away):
     return []
 
 # ── 6. Analisi AI pre-partita ─────────────────────────────────
-def analyze_with_claude(match_data, stats_home, stats_away,
-                        injuries_home, injuries_away, odds):
+def analyze_with_claude(match_data, stats_home, stats_away, injuries_home, injuries_away, odds):
     prompt = f"""
 Sei un analista di scommesse sportive esperto. Analizza questa partita
 e fornisci: 1) probabilità reali 1X2, 2) value bet migliore,
@@ -157,11 +132,7 @@ confidence_live (0-100), rischio (basso/medio/alto).
 # ── 8. Formatta e invia su Telegram ──────────────────────────
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    r = requests.post(url, json={
-        "chat_id": TG_CHAT,
-        "text": text,
-        "parse_mode": "HTML"
-    })
+    r = requests.post(url, json={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"})
     print(f"Telegram: {r.status_code}")
 
 def format_message(match, analysis):
@@ -173,15 +144,15 @@ def format_message(match, analysis):
     away = match['teams']['away']['name']
     league = match['league']['name']
     country = match['league']['country']
-    kick_utc = datetime.fromisoformat(match['fixture']['date'].replace('Z','+00:00'))
-    kick_it = kick_utc + timedelta(hours=2)
+    kick_utc = datetime.fromisoformat(match['fixture']['date'].replace('Z', '+00:00'))
+    kick_it = kick_utc.astimezone(timezone(timedelta(hours=2)))
     kickoff = kick_it.strftime("%H:%M")
     confidence = int(a.get('confidence', 0))
     star = "⭐ <b>TOP VALUE BET</b>\n" if confidence >= 70 else ""
     return f"""
 {star}⚽ <b>{home} vs {away}</b>
 🏆 {country} — {league}
-🕐 Calcio d'inizio: {kickoff}
+🕐 Calcio d'inizio: {kickoff} (ora italiana)
 
 📊 Probabilità stimate:
   1️⃣ {home[:15]}: {a.get('prob_home','?')}%
@@ -257,20 +228,18 @@ def analyze_single_live(m):
     analysis = analyze_live_with_claude(m, odds)
     return format_live_message(m, analysis)
 
-# ── 12. Job principale pre-partita ────────────────────────────
+# ── 12. Job principale ────────────────────────────────────────
 def daily_job():
     global stop_analysis
     stop_analysis = False
-    now_it = datetime.now(timezone.utc) + timedelta(hours=2)
-    limit_it = now_it + timedelta(hours=4)
-    print(f"[{datetime.now()}] Avvio analisi partite nelle prossime 4 ore...")
-    send_telegram(f"🔍 Cerco partite che iniziano entro le <b>{limit_it.strftime('%H:%M')}</b>...")
+    print(f"[{datetime.now()}] Avvio analisi partite del giorno...")
+    send_telegram("🔍 Avvio analisi di tutte le partite di oggi...")
 
     matches = get_matches()
     print(f"Trovate {len(matches)} partite.")
 
     if len(matches) == 0:
-        send_telegram("⚠️ Nessuna partita trovata nelle prossime 4 ore.")
+        send_telegram("⚠️ Nessuna partita trovata per oggi.")
         return
 
     leagues = group_by_league(matches)
@@ -298,8 +267,6 @@ def daily_job():
             season     = m['league']['season']
             home_name  = m['teams']['home']['name']
             away_name  = m['teams']['away']['name']
-            kick_utc   = datetime.fromisoformat(
-                             m['fixture']['date'].replace('Z','+00:00'))
 
             print(f"Analisi: {home_name} vs {away_name}...")
             sh   = get_team_stats(home_id, league_id, season)
@@ -334,7 +301,7 @@ def daily_job():
 
     if top_bets:
         top_bets.sort(key=lambda x: x[0], reverse=True)
-        send_telegram("⭐ <b>TOP VALUE BETS (confidence ≥ 70)</b>")
+        send_telegram("⭐ <b>TOP VALUE BETS DI OGGI (confidence ≥ 70)</b>")
         for _, msg in top_bets[:5]:
             send_telegram(msg)
             time.sleep(3)
@@ -357,8 +324,7 @@ def live_job():
         futures = {executor.submit(analyze_single_live, m): m for m in matches}
         for future in as_completed(futures):
             try:
-                msg = future.result()
-                results.append(msg)
+                results.append(future.result())
             except Exception as e:
                 print(f"Errore analisi live: {e}")
 
@@ -393,7 +359,7 @@ def listen_commands():
                     send_telegram("""
 🤖 <b>Comandi disponibili:</b>
 
-/analisi — Partite nelle prossime 4 ore
+/analisi — Tutte le partite di oggi
 /live — Giocate live (partite al 30'+)
 /stop — Ferma analisi in corso
 /stats — Statistiche previsioni
@@ -410,7 +376,7 @@ if __name__ == "__main__":
     print("Bot avviato!")
     send_telegram("""🤖 <b>Bot avviato!</b>
 
-/analisi — Partite nelle prossime 4 ore
+/analisi — Tutte le partite di oggi
 /live — Giocate live
 /stop — Ferma analisi
 /stats — Statistiche
