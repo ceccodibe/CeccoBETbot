@@ -283,6 +283,7 @@ def format_live_message(match, analysis):
     home = match['teams']['home']['name']
     away = match['teams']['away']['name']
     league = match['league']['name']
+    country = match['league']['country']
     score = match['goals']
     minute = match['fixture']['status'].get('elapsed', '?')
     return f"""
