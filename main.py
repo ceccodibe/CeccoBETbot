@@ -12,13 +12,36 @@ client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 last_update_id = 0
 
+# ── Campionati consentiti ──────────────────────────────────────
+ALLOWED_LEAGUES = [
+    "Serie A",
+    "Serie B",
+    "Premier League",
+    "La Liga",
+    "Bundesliga",
+    "Ligue 1",
+    "UEFA Champions League",
+    "UEFA Europa League",
+    "UEFA Europa Conference League",
+    "Eredivisie",
+    "Primeira Liga",
+    "Friendlies",
+]
+
 # ── 1. Partite del giorno ──────────────────────────────────────
 def get_matches():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
     r = requests.get(url, headers=headers, params={"date": today})
-    return r.json().get("response", [])
+    all_matches = r.json().get("response", [])
+
+    # Filtra solo i campionati selezionati
+    filtered = [
+        m for m in all_matches
+        if any(league.lower() in m['league']['name'].lower() for league in ALLOWED_LEAGUES)
+    ]
+    return filtered
 
 # ── 2. Statistiche squadra ─────────────────────────────────────
 def get_team_stats(team_id, league_id, season):
@@ -143,18 +166,16 @@ def daily_job():
     print(f"[{datetime.now()}] Avvio analisi partite...")
     send_telegram("🔍 Avvio analisi partite del giorno...")
     matches = get_matches()
-    print(f"Trovate {len(matches)} partite oggi.")
+    print(f"Trovate {len(matches)} partite nei campionati selezionati.")
 
     if len(matches) == 0:
-        send_telegram("⚠️ Nessuna partita trovata per oggi.")
+        send_telegram("⚠️ Nessuna partita trovata oggi nei campionati selezionati.")
         return
 
-    # Raggruppa per campionato
     leagues = group_by_league(matches)
     send_telegram(f"📅 Trovate <b>{len(matches)}</b> partite in <b>{len(leagues)}</b> campionati. Analisi in corso...")
 
     for league_name, league_matches in leagues.items():
-        # Intestazione campionato
         send_telegram(f"🏆 <b>{league_name}</b> — {len(league_matches)} partite")
         time.sleep(1)
 
@@ -220,7 +241,6 @@ if __name__ == "__main__":
     print("Comandi disponibili: /analisi")
     send_telegram("🤖 Bot avviato! Scrivi /analisi per avviare l'analisi manualmente.")
 
-    # Avvia listener comandi in background
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
 
