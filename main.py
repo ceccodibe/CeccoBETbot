@@ -126,7 +126,19 @@ def format_message(match, analysis):
 📝 {a.get('motivazione','')}
 """
 
-# ── 7. Job principale ─────────────────────────────────────────
+# ── 7. Raggruppa partite per campionato ───────────────────────
+def group_by_league(matches):
+    leagues = {}
+    for m in matches:
+        league_name = m['league']['name']
+        country = m['league']['country']
+        key = f"{country} — {league_name}"
+        if key not in leagues:
+            leagues[key] = []
+        leagues[key].append(m)
+    return leagues
+
+# ── 8. Job principale ─────────────────────────────────────────
 def daily_job():
     print(f"[{datetime.now()}] Avvio analisi partite...")
     send_telegram("🔍 Avvio analisi partite del giorno...")
@@ -137,44 +149,51 @@ def daily_job():
         send_telegram("⚠️ Nessuna partita trovata per oggi.")
         return
 
-    send_telegram(f"📅 Trovate <b>{len(matches)}</b> partite oggi. Analisi in corso...")
+    # Raggruppa per campionato
+    leagues = group_by_league(matches)
+    send_telegram(f"📅 Trovate <b>{len(matches)}</b> partite in <b>{len(leagues)}</b> campionati. Analisi in corso...")
 
-    for m in matches:
-        fixture_id = m['fixture']['id']
-        home_id    = m['teams']['home']['id']
-        away_id    = m['teams']['away']['id']
-        league_id  = m['league']['id']
-        season     = m['league']['season']
-        home_name  = m['teams']['home']['name']
-        away_name  = m['teams']['away']['name']
-        kick_utc   = datetime.fromisoformat(
-                         m['fixture']['date'].replace('Z','+00:00'))
+    for league_name, league_matches in leagues.items():
+        # Intestazione campionato
+        send_telegram(f"🏆 <b>{league_name}</b> — {len(league_matches)} partite")
+        time.sleep(1)
 
-        print(f"Analisi: {home_name} vs {away_name}...")
+        for m in league_matches:
+            fixture_id = m['fixture']['id']
+            home_id    = m['teams']['home']['id']
+            away_id    = m['teams']['away']['id']
+            league_id  = m['league']['id']
+            season     = m['league']['season']
+            home_name  = m['teams']['home']['name']
+            away_name  = m['teams']['away']['name']
+            kick_utc   = datetime.fromisoformat(
+                             m['fixture']['date'].replace('Z','+00:00'))
 
-        sh   = get_team_stats(home_id, league_id, season)
-        sa   = get_team_stats(away_id, league_id, season)
-        ih   = get_injuries(home_id, fixture_id)
-        ia   = get_injuries(away_id, fixture_id)
-        odds = get_odds(home_name, away_name)
+            print(f"Analisi: {home_name} vs {away_name}...")
 
-        analysis = analyze_with_claude(m, sh, sa, ih, ia, odds)
-        msg = format_message(m, analysis)
+            sh   = get_team_stats(home_id, league_id, season)
+            sa   = get_team_stats(away_id, league_id, season)
+            ih   = get_injuries(home_id, fixture_id)
+            ia   = get_injuries(away_id, fixture_id)
+            odds = get_odds(home_name, away_name)
 
-        # Invia 2h prima del calcio d'inizio
-        notify_at = kick_utc - timedelta(hours=2)
-        now_aware = datetime.now(kick_utc.tzinfo)
-        delay = (notify_at - now_aware).total_seconds()
+            analysis = analyze_with_claude(m, sh, sa, ih, ia, odds)
+            msg = format_message(m, analysis)
 
-        if delay > 0:
-            print(f"Invio tra {int(delay/60)} minuti...")
-            time.sleep(delay)
+            # Invia 2h prima del calcio d'inizio
+            notify_at = kick_utc - timedelta(hours=2)
+            now_aware = datetime.now(kick_utc.tzinfo)
+            delay = (notify_at - now_aware).total_seconds()
 
-        send_telegram(msg)
-        print(f"Inviato: {home_name} vs {away_name}")
-        time.sleep(5)
+            if delay > 0:
+                print(f"Invio tra {int(delay/60)} minuti...")
+                time.sleep(delay)
 
-# ── 8. Listener comandi Telegram ──────────────────────────────
+            send_telegram(msg)
+            print(f"Inviato: {home_name} vs {away_name}")
+            time.sleep(5)
+
+# ── 9. Listener comandi Telegram ──────────────────────────────
 def listen_commands():
     global last_update_id
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
@@ -193,7 +212,7 @@ def listen_commands():
             print(f"Errore listener: {e}")
         time.sleep(2)
 
-# ── 9. Scheduler + avvio ──────────────────────────────────────
+# ── 10. Scheduler + avvio ─────────────────────────────────────
 schedule.every().day.at("08:00").do(daily_job)
 
 if __name__ == "__main__":
