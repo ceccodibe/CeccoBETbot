@@ -12,20 +12,20 @@ client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 last_update_id = 0
 
-# ── Campionati consentiti ──────────────────────────────────────
+# ── Campionati consentiti (paese, nome lega) ───────────────────
 ALLOWED_LEAGUES = [
-    "Serie A",
-    "Serie B",
-    "Premier League",
-    "La Liga",
-    "Bundesliga",
-    "Ligue 1",
-    "UEFA Champions League",
-    "UEFA Europa League",
-    "UEFA Europa Conference League",
-    "Eredivisie",
-    "Primeira Liga",
-    "Friendlies",
+    ("Italy", "Serie A"),
+    ("Italy", "Serie B"),
+    ("England", "Premier League"),
+    ("Spain", "La Liga"),
+    ("Germany", "Bundesliga"),
+    ("France", "Ligue 1"),
+    ("World", "UEFA Champions League"),
+    ("World", "UEFA Europa League"),
+    ("World", "UEFA Europa Conference League"),
+    ("Netherlands", "Eredivisie"),
+    ("Portugal", "Primeira Liga"),
+    ("World", "Friendlies"),
 ]
 
 # ── 1. Partite del giorno ──────────────────────────────────────
@@ -36,10 +36,13 @@ def get_matches():
     r = requests.get(url, headers=headers, params={"date": today})
     all_matches = r.json().get("response", [])
 
-    # Filtra solo i campionati selezionati
     filtered = [
         m for m in all_matches
-        if any(league.lower() in m['league']['name'].lower() for league in ALLOWED_LEAGUES)
+        if any(
+            country.lower() in m['league']['country'].lower() and
+            league.lower() in m['league']['name'].lower()
+            for country, league in ALLOWED_LEAGUES
+        )
     ]
     return filtered
 
@@ -201,7 +204,6 @@ def daily_job():
             analysis = analyze_with_claude(m, sh, sa, ih, ia, odds)
             msg = format_message(m, analysis)
 
-            # Invia 2h prima del calcio d'inizio
             notify_at = kick_utc - timedelta(hours=2)
             now_aware = datetime.now(kick_utc.tzinfo)
             delay = (notify_at - now_aware).total_seconds()
