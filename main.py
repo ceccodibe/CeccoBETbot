@@ -106,7 +106,7 @@ def format_message(match, analysis):
         a = {}
     home = match['teams']['home']['name']
     away = match['teams']['away']['name']
-   from datetime import timezone
+   
 kick_utc = datetime.fromisoformat(match['fixture']['date'].replace('Z','+00:00'))
 kick_it = kick_utc + timedelta(hours=2)
 kickoff = kick_it.strftime("%H:%M")
