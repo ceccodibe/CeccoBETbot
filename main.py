@@ -31,10 +31,14 @@ def save_history(history):
 # ── 1. Partite nelle prossime 4 ore ──────────────────────────
 def get_matches():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
-    r = requests.get(url, headers=headers, params={"date": today})
-    all_matches = r.json().get("response", [])
+    
+    all_matches = []
+    for date in [today, tomorrow]:
+        r = requests.get(url, headers=headers, params={"date": date})
+        all_matches += r.json().get("response", [])
 
     now = datetime.now(timezone.utc)
     limit = now + timedelta(hours=4)
