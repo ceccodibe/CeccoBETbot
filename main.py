@@ -93,7 +93,16 @@ def get_matches():
     headers = {"x-apisports-key": APIFOOTBALL}
     r = requests.get(url, headers=headers, params={"date": today})
     print(f"Cerco partite per {today}: {r.json().get('results', 0)} trovate")
-    return [m for m in r.json().get("response", []) if is_allowed(m)]
+    now_utc = datetime.now(timezone.utc)
+    filtered = []
+    for m in r.json().get("response", []):
+        if not is_allowed(m):
+            continue
+        status = m["fixture"]["status"]["short"]
+        if status in ["NS", "TBD"]:  # Solo partite non ancora iniziate
+            filtered.append(m)
+    print(f"Partite non ancora iniziate: {len(filtered)}")
+    return filtered
 
 def get_matches_tomorrow():
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -495,8 +504,6 @@ def listen_commands():
         except Exception as e:
             print(f"Errore listener: {e}")
         time.sleep(2)
-
-schedule.every(30).minutes.do(live_job)
 
 if __name__ == "__main__":
     print("Bot avviato!")
