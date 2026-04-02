@@ -144,7 +144,20 @@ def get_matches():
     print(f"Dopo filtro: {len(filtered)} partite scommettibili")
     return filtered
 
-# ── 2. Partite live (solo da minuto 30 in poi) ────────────────
+# ── 2. Partite di domani ─────────────────────────────────────
+def get_matches_tomorrow():
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    tomorrow = (italy_time + timedelta(days=1)).strftime("%Y-%m-%d")
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    r = requests.get(url, headers=headers, params={"date": tomorrow})
+    print(f"Cerco partite per {tomorrow}: {r.json().get('results', 0)} trovate")
+    all_matches = r.json().get("response", [])
+    filtered = [m for m in all_matches if is_allowed(m)]
+    print(f"Dopo filtro: {len(filtered)} partite scommettibili")
+    return filtered
+
+# ── 3. Partite live (solo da minuto 30 in poi) ────────────────
 def get_live_matches():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
@@ -442,7 +455,131 @@ def live_job():
         time.sleep(2)
     send_telegram("✅ <b>Analisi live completata!</b>")
 
-# ── 14. Listener comandi ──────────────────────────────────────
+# ── 14. Job partite di domani ────────────────────────────────
+def domani_job():
+    global stop_analysis
+    stop_analysis = False
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    tomorrow = (italy_time + timedelta(days=1)).strftime("%d/%m/%Y")
+    print(f"[{datetime.now()}] Avvio analisi partite domani...")
+    send_telegram(f"🔍 Analisi partite di domani <b>{tomorrow}</b>...")
+
+    matches = get_matches_tomorrow()
+    if len(matches) == 0:
+        send_telegram("⚠️ Nessuna partita trovata domani nei campionati scommettibili.")
+        return
+
+    leagues = group_by_league(matches)
+    send_telegram(f"📅 Trovate <b>{len(matches)}</b> partite domani in <b>{len(leagues)}</b> campionati. Analisi in corso...")
+
+    history = load_history()
+    top_bets = []
+
+    for league_name, league_matches in leagues.items():
+        if stop_analysis:
+            send_telegram("🛑 Analisi fermata.")
+            return
+        send_telegram(f"🏆 <b>{league_name}</b> — {len(league_matches)} partite")
+        time.sleep(1)
+
+        for m in league_matches:
+            if stop_analysis:
+                send_telegram("🛑 Analisi fermata.")
+                return
+
+            home_name = m['teams']['home']['name']
+            away_name = m['teams']['away']['name']
+            print(f"Analisi: {home_name} vs {away_name}...")
+
+            sh   = get_team_stats(m['teams']['home']['id'], m['league']['id'], m['league']['season'])
+            sa   = get_team_stats(m['teams']['away']['id'], m['league']['id'], m['league']['season'])
+            ih   = get_injuries(m['teams']['home']['id'], m['fixture']['id'])
+            ia   = get_injuries(m['teams']['away']['id'], m['fixture']['id'])
+            odds = get_odds(home_name, away_name)
+            analysis = analyze_with_claude(m, sh, sa, ih, ia, odds)
+            msg = format_message(m, analysis)
+
+            try:
+                a = json.loads(analysis.strip("` \njson"))
+                confidence = int(a.get('confidence', 0))
+                history.append({
+                    "date": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    "match": f"{home_name} vs {away_name}",
+                    "value_bet": a.get('value_bet',''),
+                    "risultato_esatto": a.get('risultato_esatto',''),
+                    "confidence": confidence,
+                    "result": "pending"
+                })
+                if confidence >= 70:
+                    top_bets.append((confidence, msg))
+            except:
+                pass
+
+            send_telegram(msg)
+            print(f"Inviato: {home_name} vs {away_name}")
+            time.sleep(5)
+
+    save_history(history)
+
+    if top_bets:
+        top_bets.sort(key=lambda x: x[0], reverse=True)
+        send_telegram("⭐ <b>TOP VALUE BETS DOMANI (confidence ≥ 70)</b>")
+        for _, msg in top_bets[:5]:
+            send_telegram(msg)
+            time.sleep(3)
+
+    send_telegram("✅ <b>Analisi domani completata!</b>")
+
+# ── 15. Job top value bet oggi ────────────────────────────────
+def top_job():
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    top = [h for h in history if h.get('date') == today and h.get('confidence', 0) >= 70]
+    if not top:
+        send_telegram("⚠️ Nessuna value bet con confidence ≥ 70 trovata oggi.")
+        return
+    top.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+    msg = "⭐ <b>TOP VALUE BETS DI OGGI</b>
+
+"
+    for h in top[:10]:
+        msg += f"⚽ <b>{h['match']}</b>
+"
+        msg += f"💡 {h['value_bet']} | 🎯 {h['risultato_esatto']} | 🔥 {h['confidence']}/100
+
+"
+    send_telegram(msg)
+
+# ── 16. Riepilogo serale ──────────────────────────────────────
+def riepilogo_serale():
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_bets = [h for h in history if h.get('date') == today]
+    if not today_bets:
+        return
+    top = sorted([h for h in today_bets if h.get('confidence', 0) >= 70],
+                 key=lambda x: x.get('confidence', 0), reverse=True)
+    total = len(today_bets)
+    msg = f"🌙 <b>Riepilogo serale — {datetime.now().strftime('%d/%m/%Y')}</b>
+
+"
+    msg += f"📋 Partite analizzate oggi: <b>{total}</b>
+"
+    msg += f"⭐ Value bet con confidence ≥ 70: <b>{len(top)}</b>
+
+"
+    if top:
+        msg += "🏆 <b>Le migliori di oggi:</b>
+"
+        for h in top[:5]:
+            msg += f"
+⚽ <b>{h['match']}</b>
+"
+            msg += f"💡 {h['value_bet']} | 🎯 {h['risultato_esatto']} | 🔥 {h['confidence']}/100
+"
+    send_telegram(msg)
+
+# ── 17. Listener comandi ──────────────────────────────────────
 def listen_commands():
     global last_update_id, stop_analysis
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
@@ -465,6 +602,10 @@ def listen_commands():
                     stop_analysis = True
                     stop_live = True
                     send_telegram("🛑 Analisi fermata! Scrivi /analisi o /live per riavviare.")
+                elif text == "/domani":
+                    threading.Thread(target=domani_job).start()
+                elif text == "/top":
+                    top_job()
                 elif text == "/stoplive":
                     stop_live = True
                     send_telegram("🛑 Analisi live fermata! Scrivi /live per riavviare.")
@@ -477,6 +618,9 @@ def listen_commands():
 /analisi — Partite di oggi (campionati Sisal)
 /live — Giocate live (partite al 30'+)
 /stop — Ferma analisi pre-partita e live
+/domani — Analisi partite di domani
+/top — Top value bet di oggi (confidence ≥ 70)
+/riepilogo — Riepilogo serale delle previsioni
 /stoplive — Ferma solo analisi live
 /stats — Statistiche previsioni
 /help — Questo messaggio
