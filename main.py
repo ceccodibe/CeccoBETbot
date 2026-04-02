@@ -371,7 +371,7 @@ def format_message(match, analysis, best_odds=None):
             if q > 0:
                 best_str += f"  {esito}: {q} ({bk})\n"
 
-    star = "\u2b50 <b>TOP VALUE BET</b>\n" if confidence >= 70 else ""
+    star = "\u2b50 <b>TOP VALUE BET</b>\n" if confidence >= 60 else ""
     return (
         f"\n{star}\u26bd <b>{home} vs {away}</b>\n"
         f"\U0001f3c6 {country} \u2014 {league}\n"
@@ -427,9 +427,9 @@ def group_by_league(matches):
 def multipla_job():
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
-    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 70]
+    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 60]
     if not top:
-        send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 70 per la multipla.")
+        send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 per la multipla.")
         return
     top.sort(key=lambda x: x.get("confidence", 0), reverse=True)
     selezioni = top[:5]
@@ -475,9 +475,9 @@ def show_stats():
 def top_job():
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
-    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 70]
+    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 60]
     if not top:
-        send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 70 oggi.")
+        send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 oggi.")
         return
     top.sort(key=lambda x: x.get("confidence", 0), reverse=True)
     msg = "\u2b50 <b>TOP VALUE BETS DI OGGI</b>\n\n"
@@ -589,14 +589,14 @@ def run_analysis(matches, label="oggi"):
                     "confidence": confidence,
                     "result": "pending"
                 })
-                if confidence >= 70:
+                if confidence >= 60:
                     top_bets.append((confidence, msg))
 
                 # Notifica automatica per top bet
                 kick_utc = datetime.fromisoformat(m['fixture']['date'].replace('Z','+00:00'))
                 now_aware = datetime.now(kick_utc.tzinfo)
                 delay = (kick_utc - timedelta(hours=AUTO_NOTIFY_HOURS) - now_aware).total_seconds()
-                if delay > 0 and confidence >= 70:
+                if delay > 0 and confidence >= 60:
                     def delayed_send(msg=msg, delay=delay):
                         time.sleep(delay)
                         send_telegram(f"\u23f0 <b>Promemoria automatico!</b>\n{msg}")
@@ -614,7 +614,7 @@ def run_analysis(matches, label="oggi"):
 
     if top_bets:
         top_bets.sort(key=lambda x: x[0], reverse=True)
-        send_telegram(f"\u2b50 <b>TOP VALUE BETS {label.upper()} (confidence >= 70)</b>")
+        send_telegram(f"\u2b50 <b>TOP VALUE BETS {label.upper()} (confidence >= 60)</b>")
         for _, msg in top_bets[:5]:
             send_telegram(msg)
             time.sleep(3)
