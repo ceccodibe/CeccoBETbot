@@ -16,7 +16,7 @@ stop_analysis  = False
 stop_live      = False
 ADMIN_ID       = 8317266009
 AUTO_NOTIFY_HOURS = 2
-BANKROLL       = 100  # Bankroll default in euro
+BANKROLL       = 1000  # Bankroll default in euro
 
 HISTORY_FILE = "predictions_history.json"
 
@@ -62,7 +62,24 @@ ALLOWED_LEAGUES = [
     ("World", "Copa America"), ("World", "African Nations Cup"), ("World", "Friendlies"),
 ]
 
+# Parole chiave da escludere nei nomi di squadre e leghe
+EXCLUDE_KEYWORDS = [
+    'u19', 'u18', 'u17', 'u16', 'u15', 'u23', 'u21', 'u20',
+    'youth', 'under', 'reserve', 'riserve', 'primavera',
+    ' w ', ' women', 'femminile', 'femenino', 'feminine',
+    'ladies', 'girls', 'dames'
+]
+
 def is_allowed(m):
+    league_name = m['league']['name'].lower()
+    home = m['teams']['home']['name'].lower()
+    away = m['teams']['away']['name'].lower()
+
+    # Escludi squadre giovanili e femminili
+    for kw in EXCLUDE_KEYWORDS:
+        if kw in league_name or kw in home or kw in away:
+            return False
+
     return any(
         country.lower() in m['league']['country'].lower() and
         league.lower() in m['league']['name'].lower()
