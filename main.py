@@ -436,9 +436,12 @@ def multipla_job():
     quota_combined = 1.0
     for s in selezioni:
         try:
-            quota_combined *= float(s.get('quota', 1.0))
+            q = s.get('quota', 1.0)
+            if q and str(q) not in ['N/D', '', 'None', '?']:
+                quota_combined *= float(str(q).replace(',', '.'))
         except:
             pass
+    quota_combined = round(quota_combined, 2)
     kelly_pct, kelly_eur = calcola_kelly(
         sum(s.get('confidence', 0) for s in selezioni) / len(selezioni),
         quota_combined
@@ -579,11 +582,15 @@ def run_analysis(matches, label="oggi"):
                 vb = a.get('value_bet','')
                 ev = calcola_ev(prob_map.get(vb, 0), quota)
 
+                try:
+                    quota_num = float(str(quota).replace(',','.'))
+                except:
+                    quota_num = 1.0
                 history.append({
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "match": f"{home_name} vs {away_name}",
                     "value_bet": vb,
-                    "quota": quota,
+                    "quota": quota_num,
                     "ev": ev,
                     "risultato_esatto": a.get('risultato_esatto',''),
                     "confidence": confidence,
