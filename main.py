@@ -14,6 +14,8 @@ client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 last_update_id = 0
 stop_analysis  = False
 
+ADMIN_ID = 8317266009  # Solo tu puoi dare comandi
+
 HISTORY_FILE = "predictions_history.json"
 
 def load_history():
@@ -443,6 +445,9 @@ def listen_commands():
                 last_update_id = update["update_id"]
                 msg = update.get("message", {}) or update.get("channel_post", {})
                 text = msg.get("text", "").strip().lower()
+                user_id = msg.get("from", {}).get("id", 0)
+                if user_id != ADMIN_ID:
+                    continue
                 if text in ["/analisi", "/start"]:
                     threading.Thread(target=daily_job).start()
                 elif text == "/live":
