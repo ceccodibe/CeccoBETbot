@@ -157,8 +157,18 @@ INFORTUNI CASA: {[i['player']['name'] for i in injuries_home]}
 INFORTUNI OSPITI: {[i['player']['name'] for i in injuries_away]}
 QUOTE MERCATO: {odds[:3] if odds else 'non disponibili'}
 
+Le quote reali dei bookmaker sono disponibili nel campo QUOTE MERCATO.
+Usale come riferimento principale — NON inventare quote diverse.
+Se le quote non sono disponibili, indica N/D.
+
 Rispondi SOLO in JSON senza backtick con questi campi:
-prob_home, prob_draw, prob_away, value_bet, quota_consigliata,
+prob_home, prob_draw, prob_away,
+value_bet (scegli tra 1, X, 2 quella con piu valore),
+quota_consigliata (prendi la quota REALE dal mercato per quella scelta),
+over_under (Over 2.5 o Under 2.5 in base alle statistiche),
+quota_over_under (quota REALE dal mercato se disponibile, altrimenti N/D),
+gol_no_gol (Gol o No Gol in base alle statistiche),
+quota_gol_no_gol (quota REALE dal mercato se disponibile, altrimenti N/D),
 risultato_esatto, confidence, motivazione (max 3 righe).
 """
     msg = client.messages.create(
@@ -182,8 +192,18 @@ MINUTO: {minute}
 PUNTEGGIO: {score['home']} - {score['away']}
 QUOTE LIVE: {odds[:3] if odds else 'non disponibili'}
 
+Le quote live reali sono disponibili nel campo QUOTE LIVE.
+Usale come riferimento principale — NON inventare quote diverse.
+Se le quote non sono disponibili, indica N/D.
+
 Rispondi SOLO in JSON senza backtick con questi campi:
-giocata_consigliata, quota_live, motivazione_live (max 2 righe),
+giocata_consigliata (scegli la migliore tra 1X2 live),
+quota_live (quota REALE dal mercato live),
+over_under_live (Over o Under adatto al minuto di gioco),
+quota_over_under_live (quota REALE dal mercato live se disponibile, altrimenti N/D),
+gol_no_gol_live (Gol o No Gol), 
+quota_gol_no_gol_live (quota REALE dal mercato live se disponibile, altrimenti N/D),
+motivazione_live (max 2 righe),
 confidence_live (0-100), rischio (basso/medio/alto).
 """
     msg = client.messages.create(
