@@ -13,6 +13,7 @@ client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 last_update_id = 0
 stop_analysis  = False
+stop_live      = False
 
 ADMIN_ID = 8317266009  # Solo tu puoi dare comandi
 
@@ -412,6 +413,8 @@ def daily_job():
 
 # ── 13. Job live ──────────────────────────────────────────────
 def live_job():
+    global stop_live
+    stop_live = False
     print(f"[{datetime.now()}] Analisi live...")
     matches = get_live_matches()
     if not matches:
@@ -423,12 +426,18 @@ def live_job():
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(analyze_single_live, m): m for m in matches}
         for future in as_completed(futures):
+            if stop_live:
+                send_telegram("🛑 Analisi live fermata!")
+                return
             try:
                 results.append(future.result())
             except Exception as e:
                 print(f"Errore live: {e}")
 
     for msg in results:
+        if stop_live:
+            send_telegram("🛑 Analisi live fermata!")
+            return
         send_telegram(msg)
         time.sleep(2)
     send_telegram("✅ <b>Analisi live completata!</b>")
@@ -454,7 +463,11 @@ def listen_commands():
                     threading.Thread(target=live_job).start()
                 elif text == "/stop":
                     stop_analysis = True
-                    send_telegram("🛑 Analisi fermata! Scrivi /analisi per riavviare.")
+                    stop_live = True
+                    send_telegram("🛑 Analisi fermata! Scrivi /analisi o /live per riavviare.")
+                elif text == "/stoplive":
+                    stop_live = True
+                    send_telegram("🛑 Analisi live fermata! Scrivi /live per riavviare.")
                 elif text == "/stats":
                     show_stats()
                 elif text == "/help":
@@ -463,7 +476,8 @@ def listen_commands():
 
 /analisi — Partite di oggi (campionati Sisal)
 /live — Giocate live (partite al 30'+)
-/stop — Ferma analisi in corso
+/stop — Ferma analisi pre-partita e live
+/stoplive — Ferma solo analisi live
 /stats — Statistiche previsioni
 /help — Questo messaggio
 """)
