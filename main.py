@@ -432,7 +432,7 @@ def multipla_job():
         send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 per la multipla.")
         return
     top.sort(key=lambda x: x.get("confidence", 0), reverse=True)
-    selezioni = top[:5]
+    selezioni = top[:2]
     quota_combined = 1.0
     for s in selezioni:
         try:
