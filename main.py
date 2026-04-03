@@ -192,7 +192,7 @@ def get_live_matches():
     headers = {"x-apisports-key": APIFOOTBALL}
     data = api_get(url, headers, {"live": "all"})
     return [m for m in data.get("response", [])
-            if is_allowed(m) and (m['fixture']['status'].get('elapsed') or 0) >= 30]
+            if is_allowed(m) and 30 <= (m['fixture']['status'].get('elapsed') or 0) <= 80]
 
 def search_team_matches(team_name):
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -672,15 +672,15 @@ def live_job():
     stop_live = False
     matches = get_live_matches()
     if not matches:
-        send_telegram("\u26bd Nessuna partita live con almeno 30 minuti giocati.")
+        send_telegram_live("\u26bd Nessuna partita live con almeno 30 minuti giocati.")
         return
-    send_telegram(f"\U0001f534 <b>{len(matches)} partite live \u2014 analisi in corso...</b>")
+    send_telegram_live(f"\U0001f534 <b>{len(matches)} partite live \u2014 analisi in corso...</b>")
     results = []
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(analyze_single_live, m): m for m in matches}
         for future in as_completed(futures):
             if stop_live:
-                send_telegram("\U0001f6d1 Analisi live fermata!")
+                send_telegram_live("\U0001f6d1 Analisi live fermata!")
                 return
             try:
                 results.append(future.result())
@@ -688,11 +688,11 @@ def live_job():
                 print(f"Errore live: {e}")
     for msg in results:
         if stop_live:
-            send_telegram("\U0001f6d1 Analisi live fermata!")
+            send_telegram_live("\U0001f6d1 Analisi live fermata!")
             return
-        send_telegram(msg)
+        send_telegram_live(msg)
         time.sleep(2)
-    send_telegram("\u2705 <b>Analisi live completata!</b>")
+    send_telegram_live("\u2705 <b>Analisi live completata!</b>")
 
 def cerca_job(team_name):
     send_telegram(f"\U0001f50d Cerco partite di <b>{team_name}</b>...")
