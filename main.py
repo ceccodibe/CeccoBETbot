@@ -9,6 +9,7 @@ APIFOOTBALL = os.getenv("APIFOOTBALL_KEY")
 ODDS_KEY    = os.getenv("ODDS_API_KEY")
 TG_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT     = os.getenv("TELEGRAM_CHAT_ID")
+TG_CHAT_LIVE = os.getenv("TELEGRAM_CHAT_LIVE", os.getenv("TELEGRAM_CHAT_ID"))
 client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 last_update_id = 0
@@ -32,34 +33,42 @@ def save_history(history):
         json.dump(history, f, indent=2)
 
 ALLOWED_LEAGUES = [
-    ("Italy", "Serie A"), ("Italy", "Serie B"), ("Italy", "Serie C"), ("Italy", "Coppa Italia"),
-    ("England", "Premier League"), ("England", "Championship"), ("England", "League One"),
-    ("England", "League Two"), ("England", "FA Cup"), ("England", "EFL Cup"),
-    ("Spain", "La Liga"), ("Spain", "Segunda Division"), ("Spain", "Copa del Rey"),
-    ("Germany", "Bundesliga"), ("Germany", "2. Bundesliga"), ("Germany", "DFB Pokal"),
-    ("France", "Ligue 1"), ("France", "Ligue 2"), ("France", "Coupe de France"),
-    ("Portugal", "Primeira Liga"), ("Portugal", "Liga Portugal 2"),
+    # Italia
+    ("Italy", "Serie A"), ("Italy", "Serie B"), ("Italy", "Serie C"),
+    ("Italy", "Coppa Italia"),
+    # Inghilterra
+    ("England", "Premier League"), ("England", "Championship"),
+    ("England", "League One"), ("England", "FA Cup"),
+    # Francia
+    ("France", "Ligue 1"), ("France", "Ligue 2"),
+    ("France", "Coupe de France"),
+    # Spagna
+    ("Spain", "La Liga"), ("Spain", "Segunda"),
+    ("Spain", "Copa del Rey"),
+    # Germania
+    ("Germany", "Bundesliga"), ("Germany", "2. Bundesliga"),
+    ("Germany", "DFB Pokal"),
+    # Portogallo
+    ("Portugal", "Primeira Liga"), ("Portugal", "Segunda Liga"),
+    # Olanda
     ("Netherlands", "Eredivisie"), ("Netherlands", "Eerste Divisie"),
-    ("Belgium", "First Division A"), ("Belgium", "First Division B"),
-    ("Turkey", "Super Lig"), ("Turkey", "1. Lig"),
-    ("Russia", "Premier League"), ("Greece", "Super League"),
-    ("Scotland", "Premiership"), ("Scotland", "Championship"),
-    ("Austria", "Bundesliga"), ("Switzerland", "Super League"),
-    ("Denmark", "Superliga"), ("Norway", "Eliteserien"), ("Sweden", "Allsvenskan"),
-    ("Poland", "Ekstraklasa"), ("Czech-Republic", "Czech Liga"),
-    ("Croatia", "HNL"), ("Serbia", "Super Liga"), ("Romania", "Liga I"),
-    ("Ukraine", "Premier League"), ("Israel", "Premier League"),
-    ("Saudi-Arabia", "Pro League"), ("United-Arab-Emirates", "Pro League"),
+    # Belgio
+    ("Belgium", "Pro League"),
+    # Argentina
+    ("Argentina", "Liga Profesional"),
+    # Brasile
     ("Brazil", "Serie A"), ("Brazil", "Serie B"),
-    ("Argentina", "Liga Profesional"), ("Uruguay", "Primera Division"),
-    ("Chile", "Primera Division"), ("Colombia", "Primera A"),
-    ("Mexico", "Liga MX"), ("USA", "MLS"),
-    ("Japan", "J1 League"), ("China", "Super League"),
-    ("Australia", "A-League"), ("South-Korea", "K League 1"),
-    ("World", "UEFA Champions League"), ("World", "UEFA Europa League"),
-    ("World", "UEFA Europa Conference League"), ("World", "FIFA World Cup"),
-    ("World", "UEFA European Championship"), ("World", "UEFA Nations League"),
-    ("World", "Copa America"), ("World", "African Nations Cup"), ("World", "Friendlies"),
+    # Colombia
+    ("Colombia", "Primera A"),
+    # Turchia
+    ("Turkey", "Super Lig"),
+    # USA
+    ("USA", "MLS"),
+    # Tornei internazionali
+    ("World", "UEFA Champions League"),
+    ("World", "UEFA Europa League"),
+    ("World", "UEFA Europa Conference League"),
+    ("World", "FIFA World Cup"),
 ]
 
 # Parole chiave da escludere nei nomi di squadre e leghe
@@ -125,7 +134,7 @@ def calcola_kelly(prob, quota, bankroll=BANKROLL, frazione=0.25):
 def confronto_quote(home, away):
     """Trova la quota migliore tra tutti i bookmaker disponibili"""
     url = "https://api.the-odds-api.com/v4/sports/soccer/odds/"
-    params = {"apiKey": ODDS_KEY, "regions": "eu,uk", "markets": "h2h", "oddsFormat": "decimal"}
+    params = {"apiKey": ODDS_KEY, "regions": "eu,uk,it", "markets": "h2h", "oddsFormat": "decimal"}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -248,7 +257,7 @@ def get_injuries(team_id, fixture_id):
 
 def get_odds(home, away):
     url = "https://api.the-odds-api.com/v4/sports/soccer/odds/"
-    params = {"apiKey": ODDS_KEY, "regions": "eu", "markets": "h2h,totals", "oddsFormat": "decimal"}
+    params = {"apiKey": ODDS_KEY, "regions": "eu,it", "markets": "h2h,totals,team_totals", "oddsFormat": "decimal"}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -326,6 +335,18 @@ confidence_live (0-100), rischio (basso/medio/alto).
     return msg.content[0].text
 
 # ── Telegram ──────────────────────────────────────────────────
+def send_telegram_live(text):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json={"chat_id": TG_CHAT_LIVE, "text": text,
+                                          "parse_mode": "HTML"}, timeout=15)
+            print(f"Telegram Live: {r.status_code}")
+            return
+        except Exception as e:
+            print(f"Errore Telegram Live ({attempt+1}/3): {e}")
+            time.sleep(3)
+
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     for attempt in range(3):
