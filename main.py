@@ -10,6 +10,7 @@ ODDS_KEY    = os.getenv("ODDS_API_KEY")
 TG_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT     = os.getenv("TELEGRAM_CHAT_ID")
 TG_CHAT_LIVE = os.getenv("TELEGRAM_CHAT_LIVE", os.getenv("TELEGRAM_CHAT_ID"))
+print(f"Chat Live ID: {TG_CHAT_LIVE}")
 client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 last_update_id = 0
