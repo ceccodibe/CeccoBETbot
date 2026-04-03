@@ -568,6 +568,7 @@ def analyze_match(m):
 def analyze_single_live(m):
     odds = get_odds(m['teams']['home']['name'], m['teams']['away']['name'])
     analysis = analyze_live_with_claude(m, odds)
+    print(f"Claude live response: {analysis[:300]}")
     return format_live_message(m, analysis)
 
 # ── Job principali ────────────────────────────────────────────
