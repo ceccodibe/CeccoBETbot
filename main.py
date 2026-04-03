@@ -1,0 +1,810 @@
+import os, requests, anthropic, time, json, threading
+from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+load_dotenv()
+
+APIFOOTBALL = os.getenv("APIFOOTBALL_KEY")
+ODDS_KEY    = os.getenv("ODDS_API_KEY")
+TG_TOKEN    = os.getenv("TELEGRAM_TOKEN")
+TG_CHAT     = os.getenv("TELEGRAM_CHAT_ID")
+TG_CHAT_LIVE = os.getenv("TELEGRAM_CHAT_LIVE", os.getenv("TELEGRAM_CHAT_ID"))
+client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+print(f"Chat Live ID: {TG_CHAT_LIVE}")
+
+last_update_id = 0
+stop_analysis  = False
+stop_live      = False
+ADMIN_ID       = 8317266009
+AUTO_NOTIFY_HOURS = 2
+BANKROLL       = 1000
+
+HISTORY_FILE = "predictions_history.json"
+
+def load_history():
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_history(history):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+
+ALLOWED_LEAGUES = [
+    ("Italy", "Serie A"), ("Italy", "Serie B"), ("Italy", "Serie C"), ("Italy", "Coppa Italia"),
+    ("England", "Premier League"), ("England", "Championship"), ("England", "League One"), ("England", "FA Cup"),
+    ("France", "Ligue 1"), ("France", "Ligue 2"), ("France", "Coupe de France"),
+    ("Spain", "La Liga"), ("Spain", "Segunda"), ("Spain", "Copa del Rey"),
+    ("Germany", "Bundesliga"), ("Germany", "2. Bundesliga"), ("Germany", "DFB Pokal"),
+    ("Portugal", "Primeira Liga"), ("Portugal", "Segunda Liga"),
+    ("Netherlands", "Eredivisie"), ("Netherlands", "Eerste Divisie"),
+    ("Belgium", "Pro League"),
+    ("Argentina", "Liga Profesional"),
+    ("Brazil", "Serie A"), ("Brazil", "Serie B"),
+    ("Colombia", "Primera A"),
+    ("Turkey", "Super Lig"),
+    ("USA", "MLS"),
+    ("World", "UEFA Champions League"),
+    ("World", "UEFA Europa League"),
+    ("World", "UEFA Europa Conference League"),
+    ("World", "FIFA World Cup"),
+]
+
+EXCLUDE_KEYWORDS = [
+    'u19', 'u18', 'u17', 'u16', 'u15', 'u23', 'u21', 'u20',
+    'youth', 'under', 'reserve', 'riserve', 'primavera',
+    ' w ', 'women', 'femminile', 'femenino', 'feminine', 'ladies', 'girls'
+]
+
+def is_allowed(m):
+    league_name = m['league']['name'].lower()
+    home = m['teams']['home']['name'].lower()
+    away = m['teams']['away']['name'].lower()
+    for kw in EXCLUDE_KEYWORDS:
+        if kw in league_name or kw in home or kw in away:
+            return False
+    return any(
+        country.lower() in m['league']['country'].lower() and
+        league.lower() in m['league']['name'].lower()
+        for country, league in ALLOWED_LEAGUES
+    )
+
+def api_get(url, headers, params, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=15)
+            return r.json()
+        except Exception as e:
+            print(f"Errore API ({attempt+1}/{retries}): {e}")
+            time.sleep(3)
+    return {}
+
+def get_matches():
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    today = italy_time.strftime("%Y-%m-%d")
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"date": today})
+    print(f"Cerco partite per {today}: {data.get('results', 0)} trovate")
+    return [m for m in data.get("response", [])
+            if is_allowed(m) and m["fixture"]["status"]["short"] in ["NS", "TBD"]]
+
+def get_matches_tomorrow():
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    tomorrow = (italy_time + timedelta(days=1)).strftime("%Y-%m-%d")
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"date": tomorrow})
+    return [m for m in data.get("response", []) if is_allowed(m)]
+
+def get_live_matches():
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"live": "all"})
+    return [m for m in data.get("response", [])
+            if is_allowed(m) and 30 <= (m['fixture']['status'].get('elapsed') or 0) <= 80]
+
+def search_team_matches(team_name):
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    results = []
+    for delta in [0, 1]:
+        date = (italy_time + timedelta(days=delta)).strftime("%Y-%m-%d")
+        url = "https://v3.football.api-sports.io/fixtures"
+        headers = {"x-apisports-key": APIFOOTBALL}
+        data = api_get(url, headers, {"date": date})
+        for m in data.get("response", []):
+            if team_name.lower() in m['teams']['home']['name'].lower() or \
+               team_name.lower() in m['teams']['away']['name'].lower():
+                results.append(m)
+    return results
+
+def get_h2h(home_id, away_id):
+    url = "https://v3.football.api-sports.io/fixtures/headtohead"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"h2h": f"{home_id}-{away_id}", "last": 5})
+    return data.get("response", [])
+
+def get_standings(league_id, season):
+    url = "https://v3.football.api-sports.io/standings"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"league": league_id, "season": season})
+    try:
+        standings = data["response"][0]["league"]["standings"][0]
+        return [{"team": s["team"]["name"], "rank": s["rank"],
+                 "points": s["points"], "form": s.get("form", "")}
+                for s in standings[:20]]
+    except:
+        return []
+
+def get_team_stats(team_id, league_id, season):
+    url = "https://v3.football.api-sports.io/teams/statistics"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"team": team_id, "league": league_id, "season": season})
+    return data.get("response", {})
+
+def get_recent_form(team_id, league_id, season):
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"team": team_id, "league": league_id,
+                                   "season": season, "last": 5, "status": "FT"})
+    form = []
+    for m in data.get("response", []):
+        home_id = m['teams']['home']['id']
+        hg = m['goals']['home']
+        ag = m['goals']['away']
+        if team_id == home_id:
+            r = "V" if hg > ag else ("P" if hg == ag else "S")
+        else:
+            r = "V" if ag > hg else ("P" if hg == ag else "S")
+        form.append(f"{m['teams']['home']['name']} {hg}-{ag} {m['teams']['away']['name']} ({r})")
+    return form
+
+def get_injuries(team_id, fixture_id):
+    url = "https://v3.football.api-sports.io/injuries"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"team": team_id, "fixture": fixture_id})
+    return data.get("response", [])
+
+# ── Quote con sport keys specifici ────────────────────────────
+SPORT_KEYS = [
+    "soccer_italy_serie_a", "soccer_italy_serie_b",
+    "soccer_england_epl", "soccer_efl_champ", "soccer_england_league1",
+    "soccer_france_ligue_one", "soccer_france_ligue_two",
+    "soccer_spain_la_liga", "soccer_spain_segunda_division",
+    "soccer_germany_bundesliga", "soccer_germany_bundesliga2",
+    "soccer_portugal_primeira_liga",
+    "soccer_netherlands_eredivisie",
+    "soccer_belgium_first_div",
+    "soccer_turkey_super_lig",
+    "soccer_brazil_campeonato", "soccer_brazil_campeonato_serie_b",
+    "soccer_argentina_primera_division",
+    "soccer_colombia_primera_a",
+    "soccer_usa_mls",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_europa_league",
+    "soccer_uefa_europa_conference_league",
+]
+
+_odds_cache = []
+_odds_cache_time = 0
+
+def load_all_odds():
+    global _odds_cache, _odds_cache_time
+    now = time.time()
+    if now - _odds_cache_time < 300:
+        return _odds_cache
+    all_events = []
+    for sk in SPORT_KEYS:
+        try:
+            url = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
+            params = {"apiKey": ODDS_KEY, "regions": "eu,it", "markets": "h2h,totals", "oddsFormat": "decimal"}
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+            if isinstance(data, list):
+                all_events.extend(data)
+        except:
+            pass
+    _odds_cache = all_events
+    _odds_cache_time = now
+    print(f"Quote caricate: {len(all_events)} eventi totali")
+    return all_events
+
+def get_odds(home, away):
+    data = load_all_odds()
+    h = home.lower().strip()
+    a = away.lower().strip()
+    for event in data:
+        if not isinstance(event, dict):
+            continue
+        ev_home = event.get("home_team", "").lower()
+        ev_away = event.get("away_team", "").lower()
+        if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
+           (a in ev_away or ev_away in a or a.split()[0] in ev_away):
+            return event.get("bookmakers", [])
+    return []
+
+def confronto_quote(home, away):
+    data = load_all_odds()
+    h = home.lower().strip()
+    a = away.lower().strip()
+    best = {"1": (0, ""), "X": (0, ""), "2": (0, "")}
+    for event in data:
+        if not isinstance(event, dict):
+            continue
+        ev_home = event.get("home_team", "").lower()
+        ev_away = event.get("away_team", "").lower()
+        if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
+           (a in ev_away or ev_away in a or a.split()[0] in ev_away):
+            for bk in event.get("bookmakers", []):
+                bk_name = bk.get("title", "")
+                for market in bk.get("markets", []):
+                    if market.get("key") == "h2h":
+                        for o in market.get("outcomes", []):
+                            price = o.get("price", 0)
+                            name = o.get("name", "")
+                            if name.lower() == event.get("home_team","").lower():
+                                if price > best["1"][0]: best["1"] = (price, bk_name)
+                            elif name.lower() == "draw":
+                                if price > best["X"][0]: best["X"] = (price, bk_name)
+                            elif name.lower() == event.get("away_team","").lower():
+                                if price > best["2"][0]: best["2"] = (price, bk_name)
+            return best
+    return {}
+
+def calcola_ev(prob, quota):
+    try:
+        prob = float(prob) / 100
+        quota = float(quota)
+        ev = (prob * (quota - 1)) - (1 - prob)
+        return round(ev * 100, 2)
+    except:
+        return None
+
+def calcola_kelly(prob, quota, bankroll=BANKROLL, frazione=0.25):
+    try:
+        prob = float(prob) / 100
+        quota = float(quota)
+        kelly = (prob * quota - 1) / (quota - 1)
+        kelly_frazionato = kelly * frazione
+        if kelly_frazionato <= 0:
+            return 0, 0
+        puntata = round(bankroll * kelly_frazionato, 2)
+        return round(kelly_frazionato * 100, 2), puntata
+    except:
+        return None, None
+
+def analyze_with_claude(match_data, stats_home, stats_away, injuries_home,
+                        injuries_away, odds, h2h, form_home, form_away, standings):
+    prompt = f"""
+Sei un analista di scommesse sportive esperto. Analizza questa partita.
+
+PARTITA: {match_data['teams']['home']['name']} vs {match_data['teams']['away']['name']}
+DATA: {match_data['fixture']['date']}
+STATISTICHE CASA: {stats_home}
+STATISTICHE OSPITE: {stats_away}
+FORMA RECENTE CASA: {form_home}
+FORMA RECENTE OSPITE: {form_away}
+CLASSIFICA: {standings[:10] if standings else 'non disponibile'}
+H2H (ultimi 5): {h2h}
+INFORTUNI CASA: {[i['player']['name'] for i in injuries_home]}
+INFORTUNI OSPITI: {[i['player']['name'] for i in injuries_away]}
+QUOTE REALI: {odds[:3] if odds else 'non disponibili'}
+
+Usa le quote reali. Se non disponibili scrivi N/D.
+
+Rispondi SOLO in JSON senza backtick:
+prob_home, prob_draw, prob_away,
+value_bet (1 X o 2), quota_consigliata,
+over_under (Over 2.5 o Under 2.5), quota_over_under,
+gol_no_gol (Gol o No Gol), quota_gol_no_gol,
+risultato_esatto, confidence (0-100), motivazione (max 3 righe).
+"""
+    msg = client.messages.create(
+        model="claude-opus-4-5", max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return msg.content[0].text
+
+def analyze_live_with_claude(match_data, odds):
+    home = match_data['teams']['home']['name']
+    away = match_data['teams']['away']['name']
+    score = match_data['goals']
+    minute = match_data['fixture']['status'].get('elapsed', '?')
+    prompt = f"""
+Sei un analista esperto di scommesse sportive LIVE.
+Analizza questa partita e suggerisci la migliore giocata live.
+
+PARTITA: {home} vs {away}
+MINUTO: {minute}
+PUNTEGGIO: {score['home']} - {score['away']}
+QUOTE LIVE: {odds[:3] if odds else 'non disponibili'}
+
+IMPORTANTE: Devi SEMPRE fornire una analisi e una giocata consigliata
+basandoti su punteggio e minuto, anche senza quote reali.
+Se le quote non sono disponibili, STIMA quote realistiche.
+Non rispondere mai con tutti N/D.
+
+Rispondi SOLO in JSON senza backtick:
+giocata_consigliata (es. 'Over 2.5', 'Under 1.5 2T', '1', 'X', '2'),
+quota_live (reale se disponibile, altrimenti stima es. 1.75),
+motivazione_live (2-3 righe),
+confidence_live (0-100),
+rischio (basso/medio/alto).
+"""
+    msg = client.messages.create(
+        model="claude-opus-4-5", max_tokens=600,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return msg.content[0].text
+
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json={"chat_id": TG_CHAT, "text": text,
+                                          "parse_mode": "HTML"}, timeout=15)
+            print(f"Telegram: {r.status_code}")
+            return
+        except Exception as e:
+            print(f"Errore Telegram ({attempt+1}/3): {e}")
+            time.sleep(3)
+
+def send_telegram_live(text):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json={"chat_id": str(TG_CHAT_LIVE), "text": text,
+                                          "parse_mode": "HTML"}, timeout=15)
+            print(f"Telegram Live: {r.status_code}")
+            return
+        except Exception as e:
+            print(f"Errore Telegram Live ({attempt+1}/3): {e}")
+            time.sleep(3)
+
+def send_telegram_admin(text):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json={"chat_id": str(ADMIN_ID), "text": text,
+                                          "parse_mode": "HTML"}, timeout=15)
+            print(f"Telegram Admin: {r.status_code}")
+            return
+        except Exception as e:
+            print(f"Errore Telegram Admin ({attempt+1}/3): {e}")
+            time.sleep(3)
+
+def format_message(match, analysis, best_odds=None):
+    try:
+        clean = analysis.strip().strip('`').strip()
+        if clean.startswith('json'):
+            clean = clean[4:].strip()
+        a = json.loads(clean)
+    except:
+        a = {}
+    home = match['teams']['home']['name']
+    away = match['teams']['away']['name']
+    league = match['league']['name']
+    country = match['league']['country']
+    kick_utc = datetime.fromisoformat(match['fixture']['date'].replace('Z', '+00:00'))
+    kick_it = kick_utc.astimezone(timezone(timedelta(hours=2)))
+    kickoff = kick_it.strftime("%d/%m/%Y %H:%M")
+    confidence = int(a.get('confidence', 0))
+    prob_map = {"1": a.get('prob_home', 0), "X": a.get('prob_draw', 0), "2": a.get('prob_away', 0)}
+    vb = a.get('value_bet', '')
+    quota = a.get('quota_consigliata', 0)
+    prob_vb = prob_map.get(vb, 0)
+    ev = calcola_ev(prob_vb, quota)
+    kelly_pct, kelly_eur = calcola_kelly(prob_vb, quota)
+    ev_str = f"{'+' if ev and ev > 0 else ''}{ev}%" if ev is not None else "N/D"
+    kelly_str = f"{kelly_pct}% del bankroll (\u20ac{kelly_eur})" if kelly_pct else "N/D"
+    best_str = ""
+    if best_odds:
+        best_str = "\n\U0001f4b0 <b>Migliori quote:</b>\n"
+        for esito, (q, bk) in best_odds.items():
+            if q > 0:
+                best_str += f"  {esito}: {q} ({bk})\n"
+    star = "\u2b50 <b>TOP VALUE BET</b>\n" if confidence >= 60 else ""
+    return (
+        f"\n{star}\u26bd <b>{home} vs {away}</b>\n"
+        f"\U0001f3c6 {country} \u2014 {league}\n"
+        f"\U0001f550 {kickoff} (ora italiana)\n\n"
+        f"\U0001f4ca <b>Probabilita stimate:</b>\n"
+        f"  1\ufe0f\u20e3 {home[:12]}: {a.get('prob_home','?')}%\n"
+        f"  \u27a1\ufe0f Pareggio: {a.get('prob_draw','?')}%\n"
+        f"  2\ufe0f\u20e3 {away[:12]}: {a.get('prob_away','?')}%\n\n"
+        f"\U0001f4a1 <b>Value Bet: {vb}</b> @ {quota}\n"
+        f"  \U0001f4c8 EV: {ev_str}\n"
+        f"  \U0001f3b2 Kelly: {kelly_str}\n"
+        f"\U0001f4ca Over/Under: {a.get('over_under','N/A')} @ {a.get('quota_over_under','?')}\n"
+        f"\u26bd Gol/No Gol: {a.get('gol_no_gol','N/A')} @ {a.get('quota_gol_no_gol','?')}\n"
+        f"\U0001f3af Risultato esatto: {a.get('risultato_esatto','?')}\n"
+        f"\U0001f525 Confidence: {confidence}/100\n"
+        f"{best_str}\n"
+        f"\U0001f4dd {a.get('motivazione','')}\n"
+    )
+
+def format_live_message(match, analysis):
+    try:
+        clean = analysis.strip().strip('`').strip()
+        if clean.startswith('json'):
+            clean = clean[4:].strip()
+        a = json.loads(clean)
+    except:
+        a = {}
+    home = match['teams']['home']['name']
+    away = match['teams']['away']['name']
+    league = match['league']['name']
+    country = match['league']['country']
+    score = match['goals']
+    minute = match['fixture']['status'].get('elapsed', '?')
+    giocata = a.get('giocata_consigliata', 'N/A')
+    quota = a.get('quota_live', 'N/D')
+    rischio = a.get('rischio', 'N/D')
+    confidence = a.get('confidence_live', 0)
+    motivazione = a.get('motivazione_live', '')
+    return (
+        f"\U0001f534 <b>LIVE \u2014 {home} vs {away}</b>\n"
+        f"\U0001f3c6 {country} \u2014 {league}\n"
+        f"\u23f1 Minuto: {minute}' | Punteggio: {score['home']}-{score['away']}\n\n"
+        f"\U0001f3b0 <b>Giocata: {giocata}</b>\n"
+        f"\U0001f4b0 Quota: {quota}\n"
+        f"\u26a0\ufe0f Rischio: {rischio}\n"
+        f"\U0001f525 Confidence: {confidence}/100\n\n"
+        f"{motivazione}\n"
+    )
+
+def group_by_league(matches):
+    leagues = {}
+    for m in matches:
+        key = f"{m['league']['country']} \u2014 {m['league']['name']}"
+        if key not in leagues:
+            leagues[key] = []
+        leagues[key].append(m)
+    return leagues
+
+def show_stats():
+    history = load_history()
+    if not history:
+        send_telegram("\U0001f4ca Nessuna previsione registrata ancora.")
+        return
+    total = len(history)
+    correct = sum(1 for h in history if h.get('result') == 'win')
+    pending = sum(1 for h in history if h.get('result') == 'pending')
+    lost = total - correct - pending
+    pct = round((correct / (total - pending)) * 100, 1) if (total - pending) > 0 else 0
+    send_telegram(
+        f"\U0001f4ca <b>Statistiche previsioni</b>\n\n"
+        f"\U0001f4cb Totali: {total}\n"
+        f"\u2705 Vinte: {correct}\n"
+        f"\u274c Perse: {lost}\n"
+        f"\u23f3 In attesa: {pending}\n"
+        f"\U0001f3af Precisione: {pct}%\n"
+    )
+
+def top_job():
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 60]
+    if not top:
+        send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 oggi.")
+        return
+    top.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+    msg = "\u2b50 <b>TOP VALUE BETS DI OGGI</b>\n\n"
+    for h in top[:10]:
+        msg += f"\u26bd <b>{h['match']}</b>\n"
+        msg += f"\U0001f4a1 {h['value_bet']} | \U0001f3af {h['risultato_esatto']} | \U0001f525 {h['confidence']}/100\n\n"
+    send_telegram(msg)
+
+def multipla_job():
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 60]
+    if not top:
+        send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 per la multipla.")
+        return
+    top.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+    selezioni = top[:2]
+    quota_combined = 1.0
+    for s in selezioni:
+        try:
+            q = s.get('quota', 1.0)
+            if q and str(q) not in ['N/D', '', 'None', '?']:
+                quota_combined *= float(str(q).replace(',', '.'))
+        except:
+            pass
+    quota_combined = round(quota_combined, 2)
+    kelly_pct, kelly_eur = calcola_kelly(
+        sum(s.get('confidence', 0) for s in selezioni) / len(selezioni),
+        quota_combined
+    )
+    msg = "\U0001f3af <b>MULTIPLA DEL GIORNO</b>\n\n"
+    for i, s in enumerate(selezioni, 1):
+        msg += f"{i}. \u26bd <b>{s['match']}</b>\n"
+        msg += f"   \U0001f4a1 {s['value_bet']} | \U0001f525 {s['confidence']}/100\n\n"
+    msg += f"\U0001f4b0 <b>Quota combinata: {quota_combined}</b>\n"
+    if kelly_pct:
+        msg += f"\U0001f3b2 Kelly: {kelly_pct}% del bankroll (\u20ac{kelly_eur})\n"
+    send_telegram(msg)
+
+def risultato_job():
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    pending = [h for h in history if h.get('result') == 'pending' and h.get('date') == today]
+    if not pending:
+        send_telegram("\u26a0\ufe0f Nessuna previsione in attesa per oggi.")
+        return
+    msg = "\U0001f4cb <b>Previsioni in attesa:</b>\n\n"
+    for i, h in enumerate(pending):
+        msg += f"{i+1}. <b>{h['match']}</b>\n"
+        msg += f"   \U0001f4a1 {h['value_bet']} | \U0001f525 {h['confidence']}/100\n\n"
+    msg += "Rispondi con:\n<code>/vinta 1</code> o <code>/persa 1</code>"
+    send_telegram(msg)
+
+def aggiorna_risultato(idx, esito):
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    pending = [h for h in history if h.get('result') == 'pending' and h.get('date') == today]
+    if idx < 1 or idx > len(pending):
+        send_telegram("\u26a0\ufe0f Numero non valido.")
+        return
+    match_name = pending[idx-1]['match']
+    for h in history:
+        if h.get('match') == match_name and h.get('date') == today and h.get('result') == 'pending':
+            h['result'] = esito
+            break
+    save_history(history)
+    emoji = "\u2705" if esito == "win" else "\u274c"
+    send_telegram(f"{emoji} <b>{match_name}</b> \u2014 {'Vinta' if esito == 'win' else 'Persa'}")
+
+def analyze_match(m):
+    home_id    = m['teams']['home']['id']
+    away_id    = m['teams']['away']['id']
+    home_name  = m['teams']['home']['name']
+    away_name  = m['teams']['away']['name']
+    league_id  = m['league']['id']
+    season     = m['league']['season']
+    fixture_id = m['fixture']['id']
+    sh        = get_team_stats(home_id, league_id, season)
+    sa        = get_team_stats(away_id, league_id, season)
+    ih        = get_injuries(home_id, fixture_id)
+    ia        = get_injuries(away_id, fixture_id)
+    odds      = get_odds(home_name, away_name)
+    h2h       = get_h2h(home_id, away_id)
+    form_h    = get_recent_form(home_id, league_id, season)
+    form_a    = get_recent_form(away_id, league_id, season)
+    standings = get_standings(league_id, season)
+    best_odds = confronto_quote(home_name, away_name)
+    analysis = analyze_with_claude(m, sh, sa, ih, ia, odds, h2h, form_h, form_a, standings)
+    return format_message(m, analysis, best_odds), analysis
+
+def analyze_single_live(m):
+    odds = get_odds(m['teams']['home']['name'], m['teams']['away']['name'])
+    analysis = analyze_live_with_claude(m, odds)
+    return format_live_message(m, analysis)
+
+def run_analysis(matches, label="oggi"):
+    global stop_analysis
+    stop_analysis = False
+    history = load_history()
+    top_bets = []
+    leagues = group_by_league(matches)
+    send_telegram(f"\U0001f4c5 Trovate <b>{len(matches)}</b> partite in <b>{len(leagues)}</b> campionati...")
+    for league_name, league_matches in leagues.items():
+        if stop_analysis:
+            send_telegram("\U0001f6d1 Analisi fermata.")
+            return
+        send_telegram(f"\U0001f3c6 <b>{league_name}</b> \u2014 {len(league_matches)} partite")
+        time.sleep(1)
+        for m in league_matches:
+            if stop_analysis:
+                send_telegram("\U0001f6d1 Analisi fermata.")
+                return
+            home_name = m['teams']['home']['name']
+            away_name = m['teams']['away']['name']
+            print(f"Analisi: {home_name} vs {away_name}...")
+            try:
+                msg, analysis = analyze_match(m)
+                clean = analysis.strip().strip('`').strip()
+                if clean.startswith('json'):
+                    clean = clean[4:].strip()
+                a = json.loads(clean)
+                confidence = int(a.get('confidence', 0))
+                quota = a.get('quota_consigliata', 0)
+                try:
+                    quota_num = float(str(quota).replace(',', '.'))
+                except:
+                    quota_num = 1.0
+                vb = a.get('value_bet', '')
+                prob_map = {"1": a.get('prob_home',0), "X": a.get('prob_draw',0), "2": a.get('prob_away',0)}
+                ev = calcola_ev(prob_map.get(vb, 0), quota_num)
+                history.append({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "match": f"{home_name} vs {away_name}",
+                    "value_bet": vb,
+                    "quota": quota_num,
+                    "ev": ev,
+                    "risultato_esatto": a.get('risultato_esatto',''),
+                    "confidence": confidence,
+                    "result": "pending"
+                })
+                if confidence >= 60:
+                    top_bets.append((confidence, msg))
+                kick_utc = datetime.fromisoformat(m['fixture']['date'].replace('Z','+00:00'))
+                now_aware = datetime.now(kick_utc.tzinfo)
+                delay = (kick_utc - timedelta(hours=AUTO_NOTIFY_HOURS) - now_aware).total_seconds()
+                if delay > 0 and confidence >= 60:
+                    def delayed_send(msg=msg, delay=delay):
+                        time.sleep(delay)
+                        send_telegram(f"\u23f0 <b>Promemoria!</b>\n{msg}")
+                    threading.Thread(target=delayed_send, daemon=True).start()
+            except Exception as e:
+                print(f"Errore analisi {home_name} vs {away_name}: {e}")
+                msg = f"\u26a0\ufe0f Errore analisi: {home_name} vs {away_name}"
+            send_telegram(msg)
+            print(f"Inviato: {home_name} vs {away_name}")
+            time.sleep(5)
+    save_history(history)
+    if top_bets:
+        top_bets.sort(key=lambda x: x[0], reverse=True)
+        send_telegram(f"\u2b50 <b>TOP VALUE BETS {label.upper()} (confidence >= 60)</b>")
+        for _, msg in top_bets[:5]:
+            send_telegram(msg)
+            time.sleep(3)
+    send_telegram(f"\u2705 <b>Analisi {label} completata!</b>")
+
+def daily_job():
+    send_telegram("\U0001f50d Avvio analisi partite di oggi...")
+    matches = get_matches()
+    if not matches:
+        send_telegram("\u26a0\ufe0f Nessuna partita trovata oggi.")
+        return
+    run_analysis(matches, "oggi")
+
+def domani_job():
+    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    tomorrow = (italy_time + timedelta(days=1)).strftime("%d/%m/%Y")
+    send_telegram(f"\U0001f50d Analisi partite di domani <b>{tomorrow}</b>...")
+    matches = get_matches_tomorrow()
+    if not matches:
+        send_telegram("\u26a0\ufe0f Nessuna partita trovata domani.")
+        return
+    run_analysis(matches, "domani")
+
+def live_job():
+    global stop_live
+    stop_live = False
+    matches = get_live_matches()
+    if not matches:
+        send_telegram_live("\u26bd Nessuna partita live con almeno 30 minuti giocati.")
+        return
+    send_telegram_live(f"\U0001f534 <b>{len(matches)} partite live \u2014 analisi in corso...</b>")
+    results = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(analyze_single_live, m): m for m in matches}
+        for future in as_completed(futures):
+            if stop_live:
+                send_telegram_live("\U0001f6d1 Analisi live fermata!")
+                return
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"Errore live: {e}")
+    for msg in results:
+        if stop_live:
+            send_telegram_live("\U0001f6d1 Analisi live fermata!")
+            return
+        send_telegram_live(msg)
+        time.sleep(2)
+    send_telegram_live("\u2705 <b>Analisi live completata!</b>")
+
+def cerca_job(team_name):
+    send_telegram(f"\U0001f50d Cerco partite di <b>{team_name}</b>...")
+    matches = search_team_matches(team_name)
+    if not matches:
+        send_telegram(f"\u26a0\ufe0f Nessuna partita trovata per <b>{team_name}</b>.")
+        return
+    msg = f"\U0001f4cb <b>Partite trovate per {team_name}:</b>\n\n"
+    for m in matches:
+        home = m['teams']['home']['name']
+        away = m['teams']['away']['name']
+        league = m['league']['name']
+        kick_utc = datetime.fromisoformat(m['fixture']['date'].replace('Z', '+00:00'))
+        kick_it = kick_utc.astimezone(timezone(timedelta(hours=2)))
+        kickoff = kick_it.strftime("%d/%m/%Y %H:%M")
+        msg += f"\u26bd <b>{home} vs {away}</b>\n\U0001f3c6 {league}\n\U0001f550 {kickoff}\n\n"
+    send_telegram(msg)
+
+def listen_commands():
+    global last_update_id, stop_analysis, stop_live
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
+    while True:
+        try:
+            r = requests.get(url, params={"timeout": 30, "offset": last_update_id + 1}, timeout=35)
+            updates = r.json().get("result", [])
+            for update in updates:
+                last_update_id = update["update_id"]
+                msg = update.get("message", {}) or update.get("channel_post", {})
+                text = msg.get("text", "").strip()
+                text_lower = text.lower()
+                user_id = msg.get("from", {}).get("id", 0)
+                if user_id != ADMIN_ID:
+                    continue
+                if text_lower in ["/analisi", "/start"]:
+                    threading.Thread(target=daily_job).start()
+                elif text_lower == "/domani":
+                    threading.Thread(target=domani_job).start()
+                elif text_lower == "/live":
+                    threading.Thread(target=live_job).start()
+                elif text_lower == "/stop":
+                    stop_analysis = True
+                    stop_live = True
+                    send_telegram("\U0001f6d1 Analisi fermata!")
+                elif text_lower == "/stoplive":
+                    stop_live = True
+                    send_telegram("\U0001f6d1 Analisi live fermata!")
+                elif text_lower == "/top":
+                    top_job()
+                elif text_lower == "/multipla":
+                    multipla_job()
+                elif text_lower == "/risultato":
+                    risultato_job()
+                elif text_lower.startswith("/vinta "):
+                    try:
+                        aggiorna_risultato(int(text.split(" ")[1]), "win")
+                    except:
+                        send_telegram("\u26a0\ufe0f Uso: /vinta 1")
+                elif text_lower.startswith("/persa "):
+                    try:
+                        aggiorna_risultato(int(text.split(" ")[1]), "loss")
+                    except:
+                        send_telegram("\u26a0\ufe0f Uso: /persa 1")
+                elif text_lower.startswith("/cerca "):
+                    team = text[7:].strip()
+                    if team:
+                        threading.Thread(target=cerca_job, args=(team,)).start()
+                    else:
+                        send_telegram("\u26a0\ufe0f Uso: /cerca Juventus")
+                elif text_lower == "/stats":
+                    show_stats()
+                elif text_lower == "/help":
+                    send_telegram(
+                        "\U0001f916 <b>Comandi disponibili:</b>\n\n"
+                        "/analisi \u2014 Partite di oggi\n"
+                        "/domani \u2014 Partite di domani\n"
+                        "/live \u2014 Giocate live (30'-80')\n"
+                        "/top \u2014 Top value bet oggi\n"
+                        "/multipla \u2014 Multipla del giorno\n"
+                        "/cerca [squadra] \u2014 Cerca squadra\n"
+                        "/risultato \u2014 Previsioni in attesa\n"
+                        "/vinta [n] \u2014 Segna come vinta\n"
+                        "/persa [n] \u2014 Segna come persa\n"
+                        "/stop \u2014 Ferma tutto\n"
+                        "/stoplive \u2014 Ferma solo live\n"
+                        "/stats \u2014 Statistiche\n"
+                        "/help \u2014 Questo messaggio\n"
+                    )
+        except Exception as e:
+            print(f"Errore listener: {e}")
+        time.sleep(2)
+
+if __name__ == "__main__":
+    print("Bot avviato!")
+    send_telegram_admin(
+        "\U0001f916 <b>CeccoBet Bot avviato!</b>\n\n"
+        "/analisi \u2014 Partite di oggi\n"
+        "/domani \u2014 Partite di domani\n"
+        "/live \u2014 Giocate live\n"
+        "/top \u2014 Top value bet\n"
+        "/multipla \u2014 Multipla del giorno\n"
+        "/cerca [squadra] \u2014 Cerca squadra\n"
+        "/risultato \u2014 Aggiorna risultati\n"
+        "/stats \u2014 Statistiche\n"
+        "/help \u2014 Aiuto"
+    )
+    t = threading.Thread(target=listen_commands, daemon=True)
+    t.start()
+    while True:
+        time.sleep(60)
