@@ -258,18 +258,26 @@ def get_injuries(team_id, fixture_id):
 
 def get_odds(home, away):
     url = "https://api.the-odds-api.com/v4/sports/soccer/odds/"
-    params = {"apiKey": ODDS_KEY, "regions": "eu,it", "markets": "h2h,totals,team_totals", "oddsFormat": "decimal"}
+    params = {"apiKey": ODDS_KEY, "regions": "eu,it", "markets": "h2h,totals", "oddsFormat": "decimal"}
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
         if not isinstance(data, list):
+            print(f"Odds API errore: {data}")
             return []
+        print(f"Quote caricate: {len(data)} eventi")
         for event in data:
             if not isinstance(event, dict):
                 continue
-            if home.lower() in event.get("home_team","").lower() or \
-               away.lower() in event.get("away_team","").lower():
+            ev_home = event.get("home_team", "").lower()
+            ev_away = event.get("away_team", "").lower()
+            h = home.lower()
+            a = away.lower()
+            if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
+               (a in ev_away or ev_away in a or a.split()[0] in ev_away):
+                print(f"Quote trovate: {event['home_team']} vs {event['away_team']}")
                 return event.get("bookmakers", [])
+        print(f"Nessuna quota trovata per: {home} vs {away}")
     except Exception as e:
         print(f"Errore odds: {e}")
     return []
