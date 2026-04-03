@@ -170,16 +170,29 @@ def confronto_quote(home, away):
     return {}
 
 # ── Partite ───────────────────────────────────────────────────
-def get_matches():
-    italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
-    today = italy_time.strftime("%Y-%m-%d")
-    url = "https://v3.football.api-sports.io/fixtures"
-    headers = {"x-apisports-key": APIFOOTBALL}
-    data = api_get(url, headers, {"date": today})
-    print(f"Cerco partite per {today}: {data.get('results', 0)} trovate")
-    return [m for m in data.get("response", [])
-            if is_allowed(m) and m["fixture"]["status"]["short"] in ["NS", "TBD"]]
-
+def get_odds(home, away):
+    sport_keys = ["soccer_italy_serie_a","soccer_england_epl","soccer_efl_champ","soccer_england_league1","soccer_france_ligue_one","soccer_spain_la_liga","soccer_germany_bundesliga","soccer_portugal_primeira_liga","soccer_netherlands_eredivisie","soccer_brazil_campeonato","soccer_argentina_primera_division","soccer_uefa_champs_league","soccer_uefa_europa_league","soccer_uefa_europa_conference_league"]
+    h = home.lower().strip()
+    a = away.lower().strip()
+    for sk in sport_keys:
+        try:
+            url = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
+            params = {"apiKey": ODDS_KEY, "regions": "eu,it", "markets": "h2h,totals", "oddsFormat": "decimal"}
+            r = requests.get(url, params=params, timeout=8)
+            data = r.json()
+            if not isinstance(data, list):
+                continue
+            for event in data:
+                ev_home = event.get("home_team", "").lower()
+                ev_away = event.get("away_team", "").lower()
+                if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
+                   (a in ev_away or ev_away in a or a.split()[0] in ev_away):
+                    print(f"Quote trovate: {event['home_team']} vs {event['away_team']}")
+                    return event.get("bookmakers", [])
+        except:
+            pass
+    print(f"Nessuna quota: {home} vs {away}")
+    return []
 def get_matches_tomorrow():
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
     tomorrow = (italy_time + timedelta(days=1)).strftime("%Y-%m-%d")
