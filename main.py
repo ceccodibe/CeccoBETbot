@@ -18,7 +18,7 @@ stop_analysis  = False
 stop_live      = False
 ADMIN_ID       = 8317266009
 AUTO_NOTIFY_HOURS = 2
-BANKROLL       = 1000  # Bankroll default in euro
+BANKROLL       = 100  # Bankroll default in euro
 
 HISTORY_FILE = "predictions_history.json"
 
