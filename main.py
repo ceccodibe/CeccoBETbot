@@ -1,4 +1,4 @@
-import os, requests, anthropic, time, json, threading
+import os, requests, anthropic, time, json, threading, schedule
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +21,9 @@ AUTO_NOTIFY_HOURS = 2
 BANKROLL       = 1000
 
 HISTORY_FILE = "predictions_history.json"
+RAILWAY_API = os.getenv("RAILWAY_API_TOKEN", "")
+RAILWAY_PROJECT = os.getenv("RAILWAY_PROJECT_ID", "")
+RAILWAY_ENV = os.getenv("RAILWAY_ENVIRONMENT_ID", "")
 
 def load_history():
     try:
@@ -623,6 +626,7 @@ def run_analysis(matches, label="oggi"):
                 history.append({
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "match": f"{home_name} vs {away_name}",
+                    "fixture_id": m["fixture"]["id"],
                     "value_bet": vb,
                     "quota": quota_num,
                     "ev": ev,
@@ -717,6 +721,63 @@ def cerca_job(team_name):
         msg += f"\u26bd <b>{home} vs {away}</b>\n\U0001f3c6 {league}\n\U0001f550 {kickoff}\n\n"
     send_telegram(msg)
 
+def get_fixture_result(fixture_id):
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"id": fixture_id})
+    fixtures = data.get("response", [])
+    if not fixtures:
+        return None, None
+    m = fixtures[0]
+    status = m["fixture"]["status"]["short"]
+    if status not in ["FT", "AET", "PEN"]:
+        return None, None
+    hg = m["goals"]["home"]
+    ag = m["goals"]["away"]
+    if hg > ag:
+        result = "1"
+    elif hg == ag:
+        result = "X"
+    else:
+        result = "2"
+    return result, f"{hg}-{ag}"
+
+def check_and_report_results():
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_bets = [h for h in history if h.get("date") == today and h.get("result") == "pending"]
+    if not today_bets:
+        send_telegram("⚠️ Nessuna previsione da verificare oggi.")
+        return
+    updated = 0
+    lines_out = ["📊 <b>Riepilogo previsioni di oggi:</b>\n"]
+    for h in today_bets:
+        fixture_id = h.get("fixture_id")
+        if not fixture_id:
+            continue
+        actual_result, score = get_fixture_result(fixture_id)
+        if not actual_result:
+            continue
+        predicted = h.get("value_bet", "")
+        correct = actual_result == predicted
+        h["result"] = "win" if correct else "loss"
+        h["actual_result"] = actual_result
+        h["score"] = score
+        updated += 1
+        emoji = "✅" if correct else "❌"
+        esito = "presa" if correct else "sbagliata"
+        lines_out.append(emoji + " <b>" + h["match"] + "</b>\n   Prev: " + predicted + " | Risultato: " + actual_result + " (" + str(score) + ") - " + esito + "\n")
+    save_history(history)
+    if updated == 0:
+        send_telegram("⏳ Partite ancora in corso o risultati non disponibili.")
+        return
+    wins = sum(1 for h in today_bets if h.get("result") == "win")
+    losses = sum(1 for h in today_bets if h.get("result") == "loss")
+    total = wins + losses
+    pct = round((wins / total) * 100, 1) if total > 0 else 0
+    lines_out.insert(1, "✅ Vinte: " + str(wins) + " | ❌ Perse: " + str(losses) + " | 🎯 Precisione: " + str(pct) + "%\n")
+    send_telegram("\n".join(lines_out[:15]))
+
 def listen_commands():
     global last_update_id, stop_analysis, stop_live
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
@@ -767,6 +828,8 @@ def listen_commands():
                         threading.Thread(target=cerca_job, args=(team,)).start()
                     else:
                         send_telegram("\u26a0\ufe0f Uso: /cerca Juventus")
+                elif text_lower == "/riepilogo":
+                    threading.Thread(target=check_and_report_results).start()
                 elif text_lower == "/stats":
                     show_stats()
                 elif text_lower == "/help":
@@ -806,5 +869,9 @@ if __name__ == "__main__":
     )
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
+    
+    schedule.every().day.at("23:00").do(check_and_report_results)
+    
     while True:
+        schedule.run_pending()
         time.sleep(60)
