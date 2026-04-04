@@ -215,6 +215,24 @@ def load_all_odds():
     print(f"Quote caricate: {len(all_events)} eventi totali")
     return all_events
 
+def get_news_sentiment(team_name):
+    """Cerca notizie recenti sulla squadra tramite Google News RSS"""
+    try:
+        query = team_name.replace(" ", "+")
+        url = f"https://news.google.com/rss/search?q={query}+calcio&hl=it&gl=IT&ceid=IT:it"
+        r = requests.get(url, timeout=8)
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(r.content)
+        items = root.findall(".//item")[:3]
+        news = []
+        for item in items:
+            title = item.find("title")
+            if title is not None:
+                news.append(title.text[:100])
+        return news
+    except:
+        return []
+
 def get_odds(home, away):
     data = load_all_odds()
     h = home.lower().strip()
@@ -280,7 +298,8 @@ def calcola_kelly(prob, quota, bankroll=BANKROLL, frazione=0.25):
         return None, None
 
 def analyze_with_claude(match_data, stats_home, stats_away, injuries_home,
-                        injuries_away, odds, h2h, form_home, form_away, standings):
+                        injuries_away, odds, h2h, form_home, form_away, standings,
+                        news_home=None, news_away=None):
     prompt = f"""
 Sei un analista di scommesse sportive esperto. Analizza questa partita.
 
@@ -294,9 +313,12 @@ CLASSIFICA: {standings[:10] if standings else 'non disponibile'}
 H2H (ultimi 5): {h2h}
 INFORTUNI CASA: {[i['player']['name'] for i in injuries_home]}
 INFORTUNI OSPITI: {[i['player']['name'] for i in injuries_away]}
+NOTIZIE RECENTI CASA: {news_home if news_home else 'nessuna'}
+NOTIZIE RECENTI OSPITE: {news_away if news_away else 'nessuna'}
 QUOTE REALI: {odds[:3] if odds else 'non disponibili'}
 
 Usa le quote reali. Se non disponibili scrivi N/D.
+Tieni conto delle notizie recenti per valutare motivazioni e condizione squadre.
 
 Rispondi SOLO in JSON senza backtick:
 prob_home, prob_draw, prob_away,
@@ -580,7 +602,9 @@ def analyze_match(m):
     form_a    = get_recent_form(away_id, league_id, season)
     standings = get_standings(league_id, season)
     best_odds = confronto_quote(home_name, away_name)
-    analysis = analyze_with_claude(m, sh, sa, ih, ia, odds, h2h, form_h, form_a, standings)
+    news_h = get_news_sentiment(home_name)
+    news_a = get_news_sentiment(away_name)
+    analysis = analyze_with_claude(m, sh, sa, ih, ia, odds, h2h, form_h, form_a, standings, news_h, news_a)
     return format_message(m, analysis, best_odds), analysis
 
 def analyze_single_live(m):
@@ -778,6 +802,45 @@ def check_and_report_results():
     lines_out.insert(1, "✅ Vinte: " + str(wins) + " | ❌ Perse: " + str(losses) + " | 🎯 Precisione: " + str(pct) + "%\n")
     send_telegram("\n".join(lines_out[:15]))
 
+def value_alert_job():
+    """Scansiona quote ogni 30 minuti e notifica se EV > 5%"""
+    data = load_all_odds()
+    alerts = []
+    for event in data:
+        if not isinstance(event, dict):
+            continue
+        home = event.get("home_team", "")
+        away = event.get("away_team", "")
+        for bk in event.get("bookmakers", [])[:2]:
+            for market in bk.get("markets", []):
+                if market.get("key") == "h2h":
+                    for outcome in market.get("outcomes", []):
+                        quota = outcome.get("price", 0)
+                        if quota < 1.3 or quota > 5:
+                            continue
+                        # Stima probabilita implicita
+                        prob_implicita = 1 / quota
+                        # Aggiungi margine bookmaker stimato 5%
+                        prob_reale = prob_implicita * 1.05
+                        ev = round((prob_reale * (quota - 1) - (1 - prob_reale)) * 100, 1)
+                        if ev > 5:
+                            alerts.append({
+                                "match": f"{home} vs {away}",
+                                "outcome": outcome.get("name", ""),
+                                "quota": quota,
+                                "ev": ev,
+                                "bookmaker": bk.get("title", "")
+                            })
+    if not alerts:
+        return
+    alerts.sort(key=lambda x: x["ev"], reverse=True)
+    msg = "🚨 <b>VALUE ALERT!</b>\n\n"
+    for a in alerts[:5]:
+        msg += "⚽ <b>" + a["match"] + "</b>\n"
+        msg += "  💡 " + a["outcome"] + " @ " + str(a["quota"]) + "\n"
+        msg += "  📈 EV: +" + str(a["ev"]) + "% (" + a["bookmaker"] + ")\n\n"
+    send_telegram(msg)
+
 def listen_commands():
     global last_update_id, stop_analysis, stop_live
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
@@ -828,6 +891,8 @@ def listen_commands():
                         threading.Thread(target=cerca_job, args=(team,)).start()
                     else:
                         send_telegram("\u26a0\ufe0f Uso: /cerca Juventus")
+                elif text_lower == "/alert":
+                    threading.Thread(target=value_alert_job).start()
                 elif text_lower == "/riepilogo":
                     threading.Thread(target=check_and_report_results).start()
                 elif text_lower == "/stats":
@@ -871,6 +936,7 @@ if __name__ == "__main__":
     t.start()
     
     schedule.every().day.at("23:00").do(check_and_report_results)
+    schedule.every(30).minutes.do(value_alert_job)
     
     while True:
         schedule.run_pending()
