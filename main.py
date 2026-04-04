@@ -16,7 +16,7 @@ print(f"Chat Live ID: {TG_CHAT_LIVE}")
 last_update_id = 0
 stop_analysis  = False
 stop_live      = False
-ADMIN_ID       = 8317266009
+ADMIN_IDS      = [8317266009, 2129248376]
 AUTO_NOTIFY_HOURS = 2
 BANKROLL       = 1000
 
@@ -730,7 +730,7 @@ def listen_commands():
                 text = msg.get("text", "").strip()
                 text_lower = text.lower()
                 user_id = msg.get("from", {}).get("id", 0)
-                if user_id != ADMIN_ID:
+                if user_id not in ADMIN_IDS:
                     continue
                 if text_lower in ["/analisi", "/start"]:
                     threading.Thread(target=daily_job).start()
