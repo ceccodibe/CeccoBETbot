@@ -9,7 +9,7 @@ APIFOOTBALL = os.getenv("APIFOOTBALL_KEY")
 ODDS_KEY    = os.getenv("ODDS_API_KEY")
 TG_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT     = os.getenv("TELEGRAM_CHAT_ID")
-TG_CHAT_LIVE = os.getenv("TELEGRAM_CHAT_LIVE", os.getenv("TELEGRAM_CHAT_ID"))
+TG_CHAT_LIVE = os.getenv("TELEGRAM_CHAT_LIVE") or os.getenv("TELEGRAM_CHAT_ID")
 client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 print(f"Chat Live ID: {TG_CHAT_LIVE}")
 
@@ -393,7 +393,7 @@ def send_telegram_admin(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     for attempt in range(3):
         try:
-            r = requests.post(url, json={"chat_id": str(ADMIN_ID), "text": text,
+            r = requests.post(url, json={"chat_id": str(ADMIN_IDS[0]), "text": text,
                                           "parse_mode": "HTML"}, timeout=15)
             print(f"Telegram Admin: {r.status_code}")
             return
