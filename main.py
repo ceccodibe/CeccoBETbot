@@ -921,16 +921,16 @@ def listen_commands():
 if __name__ == "__main__":
     print("Bot avviato!")
     send_telegram_admin(
-        "\U0001f916 <b>CeccoBet Bot avviato!</b>\n\n"
-        "/analisi \u2014 Partite di oggi\n"
-        "/domani \u2014 Partite di domani\n"
-        "/live \u2014 Giocate live\n"
-        "/top \u2014 Top value bet\n"
-        "/multipla \u2014 Multipla del giorno\n"
-        "/cerca [squadra] \u2014 Cerca squadra\n"
-        "/risultato \u2014 Aggiorna risultati\n"
-        "/stats \u2014 Statistiche\n"
-        "/help \u2014 Aiuto"
+        "🤖 <b>CeccoBet Bot avviato!</b>\n\n"
+        "/analisi — Partite di oggi\n"
+        "/domani — Partite di domani\n"
+        "/live — Giocate live\n"
+        "/top — Top value bet\n"
+        "/multipla — Multipla del giorno\n"
+        "/cerca [squadra] — Cerca squadra\n"
+        "/alert — Value alert adesso\n"
+        "/riepilogo — Risultati di oggi\n"
+        "/help — Aiuto"
     )
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
