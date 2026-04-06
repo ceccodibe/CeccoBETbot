@@ -1,4 +1,5 @@
 import os, requests, anthropic, time, json, threading, schedule
+from pymongo import MongoClient
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -14,23 +15,48 @@ TG_CHAT_LIVE = os.getenv("TELEGRAM_CHAT_LIVE") or os.getenv("TELEGRAM_CHAT_ID")
 client       = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 print(f"Chat Live ID: {TG_CHAT_LIVE}")
 
+# MongoDB
+mongo_client = MongoClient(os.getenv("MONGODB_URI"))
+db = mongo_client["ceccobet"]
+predictions_col = db["predictions"]
+
 last_update_id = 0
 stop_analysis  = False
 stop_live      = False
 ADMIN_IDS      = [8317266009, 2129248376]
 
-HISTORY_FILE = "predictions_history.json"
 
 def load_history():
     try:
-        with open(HISTORY_FILE, "r") as f:
-            return json.load(f)
+        return list(predictions_col.find({}, {"_id": 0}))
     except:
         return []
 
 def save_history(history):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
+    try:
+        predictions_col.delete_many({})
+        if history:
+            predictions_col.insert_many(history)
+    except Exception as e:
+        print(f"Errore MongoDB save: {e}")
+
+def add_prediction(pred):
+    try:
+        predictions_col.insert_one(pred)
+    except Exception as e:
+        print(f"Errore MongoDB insert: {e}")
+
+def update_prediction(match_name, date, result, actual_result=None, score=None):
+    try:
+        update = {"result": result}
+        if actual_result: update["actual_result"] = actual_result
+        if score: update["score"] = score
+        predictions_col.update_one(
+            {"match": match_name, "date": date, "result": "pending"},
+            {"$set": update}
+        )
+    except Exception as e:
+        print(f"Errore MongoDB update: {e}")
 
 ALLOWED_LEAGUES = [
     ("Italy", "Serie A"), ("Italy", "Serie B"), ("Italy", "Coppa Italia"),
@@ -638,11 +664,11 @@ def check_and_report_results():
         h["result"] = "win" if correct else "loss"
         h["actual_result"] = actual_result
         h["score"] = score
+        update_prediction(h["match"], today, h["result"], actual_result, score)
         updated += 1
         emoji = "\u2705" if correct else "\u274c"
         esito = "presa" if correct else "sbagliata"
         lines_out.append(emoji + " <b>" + h["match"] + "</b>\n   Prev: " + predicted + " | Risultato: " + actual_result + " (" + str(score) + ") - " + esito + "\n")
-    save_history(history)
     if updated == 0:
         send_telegram("\u23f3 Partite ancora in corso o risultati non disponibili.")
         return
@@ -752,7 +778,7 @@ def run_analysis(matches, label="oggi"):
                     quota_num = float(str(a.get('quota_consigliata', 1.0)).replace(',', '.'))
                 except:
                     quota_num = 1.0
-                history.append({
+                pred = {
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "match": f"{home_name} vs {away_name}",
                     "fixture_id": m["fixture"]["id"],
@@ -761,7 +787,9 @@ def run_analysis(matches, label="oggi"):
                     "risultato_esatto": a.get('risultato_esatto', ''),
                     "confidence": confidence,
                     "result": "pending"
-                })
+                }
+                add_prediction(pred)
+                history.append(pred)
                 league_blocks.append(block)
             except Exception as e:
                 print(f"Errore analisi {home_name} vs {away_name}: {e}")
