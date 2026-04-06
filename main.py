@@ -854,6 +854,37 @@ def cerca_job(team_name):
         msg += f"\u26bd <b>{home} vs {away}</b>\n\U0001f3c6 {league}\n\U0001f550 {kickoff}\n\n"
     send_telegram(msg)
 
+def watchdog():
+    """Controlla che il bot sia vivo e le API funzionino"""
+    errors = []
+    # Test Telegram
+    try:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/getMe"
+        r = requests.get(url, timeout=10)
+        if not r.json().get("ok"):
+            errors.append("Telegram API non risponde")
+    except:
+        errors.append("Telegram non raggiungibile")
+    # Test API-Football
+    try:
+        url = "https://v3.football.api-sports.io/status"
+        headers = {"x-apisports-key": APIFOOTBALL}
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        remaining = data.get("response", {}).get("requests", {}).get("current", 0)
+        limit = data.get("response", {}).get("requests", {}).get("limit_day", 0)
+        if remaining >= limit * 0.9:
+            errors.append(f"API-Football: quasi esaurite le richieste ({remaining}/{limit})")
+    except:
+        errors.append("API-Football non raggiungibile")
+    if errors:
+        msg = "⚠️ <b>Watchdog Alert:</b>\n\n"
+        for e in errors:
+            msg += e + "\n"
+        send_telegram_admin(msg)
+    else:
+        print(f"[Watchdog] Tutto OK - {datetime.now().strftime('%H:%M')}")
+
 def listen_commands():
     global last_update_id, stop_analysis, stop_live
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
@@ -949,8 +980,11 @@ if __name__ == "__main__":
     )
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
+
     schedule.every().day.at("23:00").do(check_and_report_results)
     schedule.every(30).minutes.do(value_alert_job)
+    schedule.every(6).hours.do(watchdog)
+
     while True:
         schedule.run_pending()
         time.sleep(60)
