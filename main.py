@@ -213,6 +213,21 @@ def get_standings(league_id, season):
     except:
         return []
 
+def get_bulk_fixtures_data(fixture_ids):
+    """Prende eventi e statistiche per piu partite in una sola chiamata"""
+    bulk_data = {}
+    # API-Football supporta max 20 fixture IDs per chiamata
+    for i in range(0, len(fixture_ids), 20):
+        batch = fixture_ids[i:i+20]
+        ids_str = "-".join(str(f) for f in batch)
+        url = "https://v3.football.api-sports.io/fixtures"
+        headers = {"x-apisports-key": APIFOOTBALL}
+        data = api_get(url, headers, {"ids": ids_str})
+        for m in data.get("response", []):
+            fid = m["fixture"]["id"]
+            bulk_data[fid] = m
+    return bulk_data
+
 def get_team_stats(team_id, league_id, season):
     url = "https://v3.football.api-sports.io/teams/statistics"
     headers = {"x-apisports-key": APIFOOTBALL}
@@ -336,18 +351,45 @@ def confronto_quote(home, away):
             return best
     return {}
 
+def get_match_importance(match_data):
+    """Determina il peso/importanza della partita"""
+    league = match_data['league']['name'].lower()
+    round_info = match_data['league'].get('round', '').lower()
+
+    # Coppe e tornei importanti
+    if any(k in league for k in ['champions', 'europa', 'conference', 'world cup', 'coppa', 'cup', 'pokal', 'fa cup']):
+        if any(k in round_info for k in ['final', 'finale', 'semi', 'quarter', 'quarti', 'semifinal']):
+            return "FINALE/SEMIFINALE DI COPPA — massima importanza, squadre molto motivate, tattica conservativa probabile"
+        return "PARTITA DI COPPA — alta importanza, possibili rotazioni"
+
+    # Campionato — analisi classifica
+    standings_note = ""
+    try:
+        home_name = match_data['teams']['home']['name']
+        away_name = match_data['teams']['away']['name']
+        standings_note = f"Partita di campionato tra {home_name} e {away_name}"
+    except:
+        pass
+
+    if any(k in round_info for k in ['38', '37', '36', '34']):
+        return f"ULTIMA GIORNATA — alta tensione, risultato può determinare titolo/retrocessione/Europa"
+
+    return "PARTITA DI CAMPIONATO REGOLARE"
+
 def analyze_with_claude(match_data, stats_home, stats_away, injuries_home,
                         injuries_away, odds, h2h, form_home, form_away, standings,
                         news_home=None, news_away=None):
+    importanza = get_match_importance(match_data)
     prompt = f"""
 Sei un analista di scommesse sportive esperto. Analizza questa partita.
 
 PARTITA: {match_data['teams']['home']['name']} vs {match_data['teams']['away']['name']}
 DATA: {match_data['fixture']['date']}
+IMPORTANZA PARTITA: {importanza}
 STATISTICHE CASA: {stats_home}
 STATISTICHE OSPITE: {stats_away}
-FORMA RECENTE CASA: {form_home}
-FORMA RECENTE OSPITE: {form_away}
+FORMA RECENTE CASA (ultime 10 con split casa/trasferta): {form_home}
+FORMA RECENTE OSPITE (ultime 10 con split casa/trasferta): {form_away}
 CLASSIFICA: {standings[:10] if standings else 'non disponibile'}
 H2H (ultimi 5): {h2h}
 INFORTUNI CASA: {[i['player']['name'] for i in injuries_home]}
@@ -356,8 +398,13 @@ NOTIZIE RECENTI CASA: {news_home if news_home else 'nessuna'}
 NOTIZIE RECENTI OSPITE: {news_away if news_away else 'nessuna'}
 QUOTE REALI: {odds[:3] if odds else 'non disponibili'}
 
+Tieni conto dell importanza della partita nella tua analisi:
+- Finali e semifinali tendono ad avere meno gol e piu pareggi
+- Partite decisive per il titolo o retrocessione aumentano la motivazione
+- Ultime giornate possono avere squadre gia salve che ruotano
+
 Usa le quote reali. Se non disponibili scrivi N/D.
-Tieni conto delle notizie recenti.
+Tieni conto delle notizie recenti e del rendimento casa/trasferta.
 
 Rispondi SOLO in JSON senza backtick:
 prob_home, prob_draw, prob_away,
