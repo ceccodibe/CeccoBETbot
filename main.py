@@ -103,8 +103,57 @@ def get_live_matches():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
     data = api_get(url, headers, {"live": "all"})
-    return [m for m in data.get("response", [])
-            if is_allowed(m) and 30 <= (m['fixture']['status'].get('elapsed') or 0) <= 80]
+    filtered = []
+    for m in data.get("response", []):
+        if not is_allowed(m):
+            continue
+        elapsed = m["fixture"]["status"].get("elapsed") or 0
+        if not (30 <= elapsed <= 80):
+            continue
+        hg = m["goals"].get("home") or 0
+        ag = m["goals"].get("away") or 0
+        diff = abs(hg - ag)
+        # Filtra: partite equilibrate (0-0, 1-0, 0-1, 1-1) o con molti gol
+        total_goals = hg + ag
+        has_value = diff <= 1 or total_goals >= 2
+        if has_value:
+            filtered.append(m)
+    return filtered
+
+def get_live_stats(fixture_id):
+    """Prende statistiche live: possesso, tiri, angoli, cartellini"""
+    url = "https://v3.football.api-sports.io/fixtures/statistics"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"fixture": fixture_id})
+    stats = {}
+    for team_stats in data.get("response", []):
+        team_name = team_stats.get("team", {}).get("name", "")
+        for s in team_stats.get("statistics", []):
+            stat_type = s.get("type", "")
+            val = s.get("value", 0) or 0
+            if stat_type in ["Ball Possession", "Total Shots", "Shots on Goal",
+                              "Corner Kicks", "Yellow Cards", "Red Cards"]:
+                if team_name not in stats:
+                    stats[team_name] = {}
+                stats[team_name][stat_type] = val
+    return stats
+
+def get_live_events(fixture_id):
+    """Prende gli eventi recenti della partita"""
+    url = "https://v3.football.api-sports.io/fixtures/events"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"fixture": fixture_id})
+    events = data.get("response", [])
+    # Ultimi 5 eventi
+    recent = []
+    for e in events[-5:]:
+        minute = e.get("time", {}).get("elapsed", "?")
+        etype = e.get("type", "")
+        detail = e.get("detail", "")
+        team = e.get("team", {}).get("name", "")
+        player = e.get("player", {}).get("name", "")
+        recent.append(f"{minute}' {team} - {etype} {detail} ({player})")
+    return recent
 
 def search_team_matches(team_name):
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -297,34 +346,69 @@ risultato_esatto, confidence (0-100), motivazione (max 3 righe).
     )
     return msg.content[0].text
 
-def analyze_live_with_claude(match_data, odds):
+def analyze_live_with_claude(match_data, odds, stats=None, events=None):
     home = match_data['teams']['home']['name']
     away = match_data['teams']['away']['name']
     score = match_data['goals']
     minute = match_data['fixture']['status'].get('elapsed', '?')
+    hg = score.get('home') or 0
+    ag = score.get('away') or 0
+
+    # Determina fase di gioco
+    if int(str(minute).replace('+','')) <= 45:
+        fase = "PRIMO TEMPO"
+        focus = "Considera che manca ancora il secondo tempo. Preferisci giocate su risultato finale o Over/Under totale."
+    elif int(str(minute).replace('+','')) <= 60:
+        fase = "INIZIO SECONDO TEMPO"
+        focus = "Analizza bene il momentum. Suggerisci giocate su risultato finale, GG/NG o Over/Under totale."
+    else:
+        fase = "SECONDO TEMPO AVANZATO"
+        focus = "Siamo oltre il 60'. Preferisci giocate su Over/Under nel secondo tempo, prossimo gol, o risultato finale se c'e valore chiaro."
+
+    # Calcola momentum da statistiche
+    momentum = ""
+    if stats:
+        home_stats = stats.get(home, {})
+        away_stats = stats.get(away, {})
+        home_shots = home_stats.get("Total Shots", 0)
+        away_shots = away_stats.get("Total Shots", 0)
+        home_pos = home_stats.get("Ball Possession", "50%")
+        away_pos = away_stats.get("Ball Possession", "50%")
+        if home_shots > away_shots + 3:
+            momentum = f"{home} domina con {home_shots} tiri vs {away_shots}"
+        elif away_shots > home_shots + 3:
+            momentum = f"{away} domina con {away_shots} tiri vs {home_shots}"
+        else:
+            momentum = f"Partita equilibrata — {home_shots} tiri {home} vs {away_shots} tiri {away}"
+        momentum += f" | Possesso: {home} {home_pos} — {away} {away_pos}"
+
     prompt = f"""
 Sei un analista esperto di scommesse sportive LIVE.
-Analizza questa partita e suggerisci la migliore giocata live.
 
 PARTITA: {home} vs {away}
-MINUTO: {minute}
-PUNTEGGIO: {score['home']} - {score['away']}
+FASE: {fase} — Minuto: {minute}'
+PUNTEGGIO: {hg} - {ag}
+EVENTI RECENTI: {events if events else 'nessuno'}
+STATISTICHE LIVE: {stats if stats else 'non disponibili'}
+MOMENTUM: {momentum if momentum else 'non disponibile'}
 QUOTE LIVE: {odds[:3] if odds else 'non disponibili'}
 
-IMPORTANTE: Devi SEMPRE fornire una analisi e una giocata consigliata
-basandoti su punteggio e minuto, anche senza quote reali.
-Se le quote non sono disponibili, STIMA quote realistiche.
+{focus}
+
+IMPORTANTE: Fornisci SEMPRE una giocata concreta basandoti su tutti i dati.
+Se le quote non sono disponibili, stimale in modo realistico.
 Non rispondere mai con tutti N/D.
 
 Rispondi SOLO in JSON senza backtick:
-giocata_consigliata (es. 'Over 2.5', 'Under 1.5 2T', '1', 'X', '2'),
-quota_live (reale se disponibile, altrimenti stima es. 1.75),
-motivazione_live (2-3 righe),
+giocata_consigliata (descrizione chiara es. 'Over 2.5 Totale', 'Under 0.5 2T', '1 Vittoria Casa', 'Prossimo gol: Casa'),
+quota_live (reale o stima realistica),
+momentum (una riga su chi sta dominando),
+motivazione_live (2-3 righe che spiegano la giocata in base a statistiche e fase di gioco),
 confidence_live (0-100),
 rischio (basso/medio/alto).
 """
     msg = client.messages.create(
-        model="claude-opus-4-5", max_tokens=600,
+        model="claude-opus-4-5", max_tokens=700,
         messages=[{"role": "user", "content": prompt}]
     )
     return msg.content[0].text
@@ -629,8 +713,11 @@ def analyze_match(m):
     return format_match_block(m, analysis, best_odds), analysis
 
 def analyze_single_live(m):
-    odds = get_odds(m['teams']['home']['name'], m['teams']['away']['name'])
-    analysis = analyze_live_with_claude(m, odds)
+    fixture_id = m['fixture']['id']
+    odds   = get_odds(m['teams']['home']['name'], m['teams']['away']['name'])
+    stats  = get_live_stats(fixture_id)
+    events = get_live_events(fixture_id)
+    analysis = analyze_live_with_claude(m, odds, stats, events)
     return format_live_block(m, analysis)
 
 def run_analysis(matches, label="oggi"):
