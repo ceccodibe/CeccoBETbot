@@ -47,7 +47,7 @@ SPORT_KEYS = [
 ]
 
 # ── Impostazioni generali ─────────────────────────────────────
-BANKROLL           = 100     # Bankroll default in euro
+BANKROLL           = 1000     # Bankroll default in euro
 AUTO_NOTIFY_HOURS  = 2        # Ore prima del match per notifica automatica
 CONFIDENCE_MIN     = 60       # Confidence minima per top value bet
 LIVE_MIN_MINUTE    = 30       # Minuto minimo per analisi live
