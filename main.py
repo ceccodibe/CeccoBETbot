@@ -213,6 +213,27 @@ def get_standings(league_id, season):
     except:
         return []
 
+# ── Bandiere paesi ───────────────────────────────────────────
+COUNTRY_FLAGS = {
+    "Italy": "🇮🇹",
+    "England": "🏴725E7F",
+    "Spain": "🇪🇸",
+    "Germany": "🇩🇪",
+    "France": "🇫🇷",
+    "Portugal": "🇵🇹",
+    "Netherlands": "🇳🇱",
+    "Belgium": "🇧🇪",
+    "Turkey": "🇹🇷",
+    "Brazil": "🇧🇷",
+    "Argentina": "🇦🇷",
+    "Colombia": "🇨🇴",
+    "USA": "🇺🇸",
+    "World": "🌍",
+}
+
+def get_flag(country):
+    return COUNTRY_FLAGS.get(country, "🏆")
+
 def get_bulk_fixtures_data(fixture_ids):
     """Prende eventi e statistiche per piu partite in una sola chiamata"""
     bulk_data = {}
