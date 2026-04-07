@@ -351,6 +351,55 @@ def confronto_quote(home, away):
             return best
     return {}
 
+def calcola_ev_reale(prob_stimata, quota):
+    """Calcola EV reale confrontando probabilita stimata con probabilita implicita della quota"""
+    try:
+        prob = float(prob_stimata) / 100
+        q = float(str(quota).replace(',','.'))
+        if q <= 1:
+            return None, None
+        prob_implicita = 1 / q
+        ev = (prob * (q - 1)) - (1 - prob)
+        valore = prob - prob_implicita
+        return round(ev * 100, 2), round(valore * 100, 2)
+    except:
+        return None, None
+
+def get_calibrazione_confidence():
+    """Legge lo storico MongoDB e calcola il fattore di calibrazione"""
+    try:
+        history = list(predictions_col.find(
+            {"result": {"$in": ["win", "loss"]}},
+            {"_id": 0, "confidence": 1, "result": 1}
+        ))
+        if len(history) < 20:
+            return 1.0  # Non abbastanza dati
+        # Raggruppa per fascia di confidence
+        fasce = {"alto": {"win": 0, "total": 0}, "medio": {"win": 0, "total": 0}, "basso": {"win": 0, "total": 0}}
+        for h in history:
+            conf = h.get("confidence", 0)
+            esito = h.get("result")
+            if conf >= 70:
+                fascia = "alto"
+            elif conf >= 55:
+                fascia = "medio"
+            else:
+                fascia = "basso"
+            fasce[fascia]["total"] += 1
+            if esito == "win":
+                fasce[fascia]["win"] += 1
+        # Calcola accuratezza reale vs attesa
+        acc_alto = fasce["alto"]["win"] / fasce["alto"]["total"] if fasce["alto"]["total"] > 0 else 0.7
+        acc_medio = fasce["medio"]["win"] / fasce["medio"]["total"] if fasce["medio"]["total"] > 0 else 0.55
+        print(f"Calibrazione: alto={round(acc_alto*100)}% medio={round(acc_medio*100)}%")
+        # Fattore di calibrazione (1.0 = perfetto, <1 = bot sovrastima)
+        atteso_alto = 0.70
+        calibrazione = acc_alto / atteso_alto if acc_alto > 0 else 1.0
+        return round(min(max(calibrazione, 0.5), 1.5), 2)
+    except Exception as e:
+        print(f"Errore calibrazione: {e}")
+        return 1.0
+
 def get_match_importance(match_data):
     """Determina il peso/importanza della partita"""
     league = match_data['league']['name'].lower()
@@ -765,6 +814,23 @@ def analyze_match(m):
     news_h    = get_news_sentiment(home_name)
     news_a    = get_news_sentiment(away_name)
     analysis  = analyze_with_claude(m, sh, sa, ih, ia, odds, h2h, form_h, form_a, standings, news_h, news_a)
+
+    # Calcola EV reale e aggiungilo al blocco
+    try:
+        clean = analysis.strip().strip("`").strip()
+        if clean.startswith("json"):
+            clean = clean[4:].strip()
+        a = json.loads(clean)
+        vb = a.get("value_bet", "")
+        quota = a.get("quota_consigliata", 0)
+        prob_map = {"1": a.get("prob_home", 0), "X": a.get("prob_draw", 0), "2": a.get("prob_away", 0)}
+        prob = prob_map.get(vb, 0)
+        ev, valore = calcola_ev_reale(prob, quota)
+        if ev is not None:
+            analysis = analysis.rstrip().rstrip("}") + f', "ev_reale": {ev}, "valore_quota": {valore}' + "}"
+    except:
+        pass
+
     return format_match_block(m, analysis, best_odds), analysis
 
 def analyze_single_live(m):
