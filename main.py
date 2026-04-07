@@ -838,10 +838,7 @@ def analyze_match(m):
 
     # Calcola EV reale e aggiungilo al blocco
     try:
-        clean = analysis.strip().strip("`").strip()
-        if clean.startswith("json"):
-            clean = clean[4:].strip()
-        a = json.loads(clean)
+        a = parse_json_safe(analysis)
         vb = a.get("value_bet", "")
         quota = a.get("quota_consigliata", 0)
         prob_map = {"1": a.get("prob_home", 0), "X": a.get("prob_draw", 0), "2": a.get("prob_away", 0)}
@@ -885,10 +882,7 @@ def run_analysis(matches, label="oggi"):
             print(f"Analisi: {home_name} vs {away_name}...")
             try:
                 block, analysis = analyze_match(m)
-                clean = analysis.strip().strip('`').strip()
-                if clean.startswith('json'):
-                    clean = clean[4:].strip()
-                a = json.loads(clean)
+                a = parse_json_safe(analysis)
                 confidence = int(a.get('confidence', 0))
                 try:
                     quota_num = float(str(a.get('quota_consigliata', 1.0)).replace(',', '.'))
