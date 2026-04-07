@@ -380,39 +380,21 @@ def analyze_with_claude(match_data, stats_home, stats_away, injuries_home,
                         injuries_away, odds, h2h, form_home, form_away, standings,
                         news_home=None, news_away=None):
     importanza = get_match_importance(match_data)
-    prompt = f"""
-Sei un analista di scommesse sportive esperto. Analizza questa partita.
-
-PARTITA: {match_data['teams']['home']['name']} vs {match_data['teams']['away']['name']}
-DATA: {match_data['fixture']['date']}
-IMPORTANZA PARTITA: {importanza}
-STATISTICHE CASA: {stats_home}
-STATISTICHE OSPITE: {stats_away}
-FORMA RECENTE CASA (ultime 10 con split casa/trasferta): {form_home}
-FORMA RECENTE OSPITE (ultime 10 con split casa/trasferta): {form_away}
-CLASSIFICA: {standings[:10] if standings else 'non disponibile'}
-H2H (ultimi 5): {h2h}
-INFORTUNI CASA: {[i['player']['name'] for i in injuries_home]}
-INFORTUNI OSPITI: {[i['player']['name'] for i in injuries_away]}
-NOTIZIE RECENTI CASA: {news_home if news_home else 'nessuna'}
-NOTIZIE RECENTI OSPITE: {news_away if news_away else 'nessuna'}
-QUOTE REALI: {odds[:3] if odds else 'non disponibili'}
-
-Tieni conto dell importanza della partita nella tua analisi:
-- Finali e semifinali tendono ad avere meno gol e piu pareggi
-- Partite decisive per il titolo o retrocessione aumentano la motivazione
-- Ultime giornate possono avere squadre gia salve che ruotano
-
-Usa le quote reali. Se non disponibili scrivi N/D.
-Tieni conto delle notizie recenti e del rendimento casa/trasferta.
-
-Rispondi SOLO in JSON senza backtick:
-prob_home, prob_draw, prob_away,
-value_bet (1 X o 2), quota_consigliata,
-over_under (Over 2.5 o Under 2.5), quota_over_under,
-gol_no_gol (Gol o No Gol), quota_gol_no_gol,
-risultato_esatto, confidence (0-100), motivazione (max 3 righe).
-"""
+    home = match_data['teams']['home']['name']
+    away = match_data['teams']['away']['name']
+    infortuni_h = [i['player']['name'] for i in injuries_home]
+    infortuni_a = [i['player']['name'] for i in injuries_away]
+    classifica = [{k: s[k] for k in ['team','rank','points','form']} for s in standings[:8]] if standings else []
+    prompt = f"""Analista scommesse. Analizza {home} vs {away}.
+IMPORTANZA: {importanza}
+FORMA CASA (10 partite): {form_home}
+FORMA OSPITE (10 partite): {form_away}
+CLASSIFICA: {classifica}
+H2H: {h2h[:3] if h2h else 'N/D'}
+INFORTUNI: Casa={infortuni_h} Ospite={infortuni_a}
+NOTIZIE: Casa={news_home[:2] if news_home else 'N/D'} Ospite={news_away[:2] if news_away else 'N/D'}
+QUOTE: {odds[:2] if odds else 'N/D'}
+JSON senza backtick: prob_home,prob_draw,prob_away,value_bet,quota_consigliata,over_under,quota_over_under,gol_no_gol,quota_gol_no_gol,risultato_esatto,confidence,motivazione(max 2 righe)"""
     msg = client.messages.create(
         model="claude-opus-4-5", max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
