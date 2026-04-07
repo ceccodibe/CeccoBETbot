@@ -639,7 +639,7 @@ def show_stats():
 def top_job():
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
-    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 60]
+    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 68]
     if not top:
         send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 oggi.")
         return
@@ -653,7 +653,7 @@ def top_job():
 def multipla_job():
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
-    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 60]
+    top = [h for h in history if h.get("date") == today and h.get("confidence", 0) >= 68]
     if not top:
         send_telegram("\u26a0\ufe0f Nessuna value bet con confidence >= 60 per la multipla.")
         return
