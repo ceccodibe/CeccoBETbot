@@ -1,5 +1,19 @@
 import os, requests, anthropic, time, json, threading, schedule
 from pymongo import MongoClient
+
+def parse_json_safe(text):
+    """Parsing JSON robusto che gestisce testo extra"""
+    try:
+        clean = text.strip().strip('`').strip()
+        if clean.startswith('json'):
+            clean = clean[4:].strip()
+        start = clean.find('{')
+        end = clean.rfind('}')
+        if start != -1 and end != -1:
+            clean = clean[start:end+1]
+        return json.loads(clean)
+    except:
+        return {}
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
