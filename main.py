@@ -2,11 +2,14 @@ import os, requests, anthropic, time, json, threading, schedule
 from pymongo import MongoClient
 
 def parse_json_safe(text):
-    """Parsing JSON robusto che gestisce testo extra"""
+    """Parsing JSON robusto che gestisce backtick, json prefix e testo extra"""
     try:
-        clean = text.strip().strip('`').strip()
+        clean = text.strip()
+        # Rimuovi backtick multipli e json prefix
+        clean = clean.replace('```json', '').replace('```', '').strip()
         if clean.startswith('json'):
             clean = clean[4:].strip()
+        # Trova il primo { e l ultimo }
         start = clean.find('{')
         end = clean.rfind('}')
         if start != -1 and end != -1:
