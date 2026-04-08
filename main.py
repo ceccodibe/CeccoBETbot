@@ -849,6 +849,7 @@ def analyze_match(m):
     news_h    = get_news_sentiment(home_name)
     news_a    = get_news_sentiment(away_name)
     analysis  = analyze_with_claude(m, sh, sa, ih, ia, odds, h2h, form_h, form_a, standings, news_h, news_a)
+    print(f"Claude raw: {repr(analysis[:300])}")
 
     # Calcola EV reale e aggiungilo al blocco
     try:
