@@ -832,6 +832,7 @@ def run_analysis(matches, label="oggi"):
                     block, pred, ev = future.result()
                     calibrazione = get_calibrazione_confidence()
                     pred["confidence"] = max(0, min(100, round(pred["confidence"] * calibrazione)))
+                    print(f"OK: {pred['match']} | conf:{pred['confidence']} | ev:{ev}")
                     if ev is not None and ev < 3:
                         add_prediction(pred)
                         continue
