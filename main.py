@@ -88,17 +88,15 @@ EXCLUDE_KEYWORDS = [
 
 SPORT_KEYS = [
     "soccer_italy_serie_a", "soccer_italy_serie_b",
-    "soccer_england_epl", "soccer_efl_champ", "soccer_england_league1",
+    "soccer_england_premier_league", "soccer_efl_champ",
     "soccer_france_ligue_one", "soccer_france_ligue_two",
-    "soccer_spain_la_liga", "soccer_spain_segunda_division",
+    "soccer_spain_la_liga",
     "soccer_germany_bundesliga", "soccer_germany_bundesliga2",
     "soccer_portugal_primeira_liga",
     "soccer_netherlands_eredivisie",
     "soccer_belgium_first_div",
-    "soccer_turkey_super_lig",
-    "soccer_brazil_campeonato", "soccer_brazil_campeonato_serie_b",
+    "soccer_brazil_campeonato",
     "soccer_argentina_primera_division",
-    "soccer_colombia_primera_a",
     "soccer_usa_mls",
     "soccer_uefa_champs_league",
     "soccer_uefa_europa_league",
@@ -303,26 +301,33 @@ _odds_cache = []
 _odds_cache_time = 0
 
 def load_all_odds():
+    """Carica tutte le quote in UNA sola chiamata — risparmia crediti API"""
     global _odds_cache, _odds_cache_time
     now = time.time()
-    if now - _odds_cache_time < 300:
+    if now - _odds_cache_time < 43200:  # Cache per 12 ore
         return _odds_cache
     all_events = []
-    for sk in SPORT_KEYS:
-        try:
-            url = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
-            params = {"apiKey": ODDS_KEY, "regions": "eu,it", "markets": "h2h,totals", "oddsFormat": "decimal"}
-            r = requests.get(url, params=params, timeout=10)
-            data = r.json()
-            if isinstance(data, list):
-                all_events.extend(data)
-            else:
-                print(f"Odds error {sk}: {data}")
-        except Exception as e:
-            print(f"Odds exception {sk}: {e}")
+    try:
+        # Una sola chiamata per tutto il calcio
+        url = "https://api.the-odds-api.com/v4/sports/soccer/odds/"
+        params = {
+            "apiKey": ODDS_KEY,
+            "regions": "eu,it",
+            "markets": "h2h",
+            "oddsFormat": "decimal",
+            "dateFormat": "iso"
+        }
+        r = requests.get(url, params=params, timeout=30)
+        data = r.json()
+        if isinstance(data, list):
+            all_events = data
+            print(f"Quote caricate: {len(all_events)} eventi totali")
+        else:
+            print(f"Odds error: {data.get('error_code','?')} - {data.get('message','')}")
+    except Exception as e:
+        print(f"Odds exception: {e}")
     _odds_cache = all_events
     _odds_cache_time = now
-    print(f"Quote caricate: {len(all_events)} eventi totali")
     return all_events
 
 def get_odds(home, away):
@@ -1014,6 +1019,7 @@ if __name__ == "__main__":
     )
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
+    schedule.every().day.at("10:00").do(daily_job)
     schedule.every().day.at("23:00").do(check_and_report_results)
     schedule.every(30).minutes.do(value_alert_job)
     schedule.every(6).hours.do(watchdog)
