@@ -316,8 +316,10 @@ def load_all_odds():
             data = r.json()
             if isinstance(data, list):
                 all_events.extend(data)
-        except:
-            pass
+            else:
+                print(f"Odds error {sk}: {data}")
+        except Exception as e:
+            print(f"Odds exception {sk}: {e}")
     _odds_cache = all_events
     _odds_cache_time = now
     print(f"Quote caricate: {len(all_events)} eventi totali")
