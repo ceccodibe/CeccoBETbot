@@ -942,7 +942,9 @@ def listen_commands():
                 user_id = msg.get("from", {}).get("id", 0)
                 if user_id not in ADMIN_IDS:
                     continue
-                if text_lower in ["/analisi", "/start"]:
+                if text_lower == "/start":
+                    send_telegram_admin("\U0001f916 <b>CeccoBet Bot attivo!</b>\nUsa /help per vedere i comandi.")
+                elif text_lower == "/analisi":
                     threading.Thread(target=daily_job).start()
                 elif text_lower == "/domani":
                     threading.Thread(target=domani_job).start()
