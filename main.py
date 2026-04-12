@@ -98,20 +98,42 @@ def load_all_odds():
     now = time.time()
     if now - _odds_cache_time < 43200:  # Cache 12 ore
         return _odds_cache
-    try:
-        url = "https://api.the-odds-api.com/v4/sports/soccer/odds/"
-        params = {"apiKey": ODDS_KEY, "regions": "eu", "markets": "h2h", "oddsFormat": "decimal"}
-        r = requests.get(url, params=params, timeout=30)
-        data = r.json()
-        if isinstance(data, list):
-            _odds_cache = data
-            _odds_cache_time = now
-            print(f"Quote caricate: {len(data)} eventi")
-        else:
-            print(f"Odds error: {data.get('message','?')}")
-    except Exception as e:
-        print(f"Odds exception: {e}")
-    return _odds_cache
+    all_events = []
+    # Lista campionati principali — una chiamata per ognuno
+    sport_keys = [
+        "soccer_italy_serie_a", "soccer_italy_serie_b",
+        "soccer_england_premier_league", "soccer_efl_champ",
+        "soccer_france_ligue_one", "soccer_france_ligue_two",
+        "soccer_spain_la_liga",
+        "soccer_germany_bundesliga", "soccer_germany_bundesliga2",
+        "soccer_portugal_primeira_liga",
+        "soccer_netherlands_eredivisie",
+        "soccer_belgium_first_div",
+        "soccer_brazil_campeonato",
+        "soccer_argentina_primera_division",
+        "soccer_usa_mls",
+        "soccer_uefa_champs_league",
+        "soccer_uefa_europa_league",
+        "soccer_uefa_europa_conference_league",
+    ]
+    for sk in sport_keys:
+        try:
+            url = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
+            params = {"apiKey": ODDS_KEY, "regions": "eu", "markets": "h2h", "oddsFormat": "decimal"}
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+            if isinstance(data, list):
+                all_events.extend(data)
+            elif data.get("error_code") == "OUT_OF_USAGE_CREDITS":
+                print("Odds: crediti esauriti!")
+                break
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"Odds error {sk}: {e}")
+    _odds_cache = all_events
+    _odds_cache_time = now
+    print(f"Quote caricate: {len(all_events)} eventi")
+    return all_events
 
 def get_odds(home, away):
     data = load_all_odds()
@@ -241,19 +263,17 @@ def analyze_prematch(m, form_h, form_a, odds):
     else:
         importanza = "CAMPIONATO REGOLARE"
 
-    prompt = f"""Analista scommesse. Analizza {home} vs {away}.
+    prompt = f"""Analista scommesse esperto. Analizza {home} vs {away}.
 IMPORTANZA: {importanza}
 FORMA CASA (ultime 5): {form_h}
 FORMA OSPITE (ultime 5): {form_a}
 QUOTE 1X2: {odds}
-Scegli LA MIGLIORE giocata tra queste opzioni:
-- 1X2: vittoria casa (1), pareggio (X), vittoria ospite (2)
-- Doppia chance: 1X, X2, 12
-- Over/Under: Over 2.5, Under 2.5, Over 1.5, Under 1.5
-- GG/NG: entrambe segnano (GG) o no (NG)
-Scegli quella con piu valore in base a forma e importanza partita.
-Rispondi SOLO con JSON valido:
-{{"giocata":"es. 1 o X2 o Over 2.5 o GG","quota":X,"motivazione":"max 2 righe","confidence":X}}"""
+Individua LA SINGOLA MIGLIORE value bet considerando:
+1X2 (1/X/2), Doppia chance (1X/X2/12), Over/Under (Over o Under 2.5 o 1.5), GG/NG
+Scegli quella con piu valore reale rispetto alle quote di mercato.
+Stima una quota realistica se non disponibile.
+Rispondi SOLO con JSON valido senza backtick:
+{{"giocata":"es. 1 o X2 o Over 2.5 o GG","quota":X,"motivazione":"massimo 1 riga concisa","confidence":X}}"""
 
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001", max_tokens=300,
