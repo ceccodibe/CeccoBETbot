@@ -702,7 +702,6 @@ if __name__ == "__main__":
     )
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
-    schedule.every().day.at("10:00").do(daily_job)
     schedule.every().day.at("23:00").do(check_and_report_results)
     schedule.every(6).hours.do(watchdog)
     while True:
