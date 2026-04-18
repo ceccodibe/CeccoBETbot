@@ -42,21 +42,21 @@ ALLOWED_LEAGUES = [
 ]
 
 EXCLUDE_KEYWORDS = [
-    'u19','u18','u17','u16','u15','u23','u21','u20',
-    'youth','under','reserve','riserve','primavera',
-    ' w ','women','femminile','femenino','feminine','ladies','girls'
+    "u19","u18","u17","u16","u15","u23","u21","u20",
+    "youth","under","reserve","riserve","primavera",
+    " w ","women","femminile","femenino","feminine","ladies","girls"
 ]
 
 def is_allowed(m):
-    league_name = m['league']['name'].lower()
-    home = m['teams']['home']['name'].lower()
-    away = m['teams']['away']['name'].lower()
+    league_name = m["league"]["name"].lower()
+    home = m["teams"]["home"]["name"].lower()
+    away = m["teams"]["away"]["name"].lower()
     for kw in EXCLUDE_KEYWORDS:
         if kw in league_name or kw in home or kw in away:
             return False
     return any(
-        country.lower() in m['league']['country'].lower() and
-        league.lower() in m['league']['name'].lower()
+        country.lower() in m["league"]["country"].lower() and
+        league.lower() in m["league"]["name"].lower()
         for country, league in ALLOWED_LEAGUES
     )
 
@@ -72,7 +72,7 @@ def api_get(url, headers, params, retries=3):
 
 def add_prediction(pred):
     try:
-        pred.pop('_id', None)
+        pred.pop("_id", None)
         predictions_col.insert_one(pred)
     except Exception as e:
         print(f"Errore MongoDB: {e}")
@@ -89,49 +89,42 @@ def update_prediction(match_name, date, result, actual_result=None, score=None):
     except Exception as e:
         print(f"Errore MongoDB update: {e}")
 
-# ── Verifica esito giocata ────────────────────────────────────
 def verifica_giocata(giocata, hg, ag):
-    """Verifica se la giocata è stata vinta in base al risultato reale"""
+    """Verifica se la giocata e stata vinta in base al risultato reale"""
     g = giocata.lower().strip()
     totale = hg + ag
     entrambe = hg > 0 and ag > 0
-
     # 1X2
     if g == "1": return hg > ag
     if g == "x": return hg == ag
     if g == "2": return ag > hg
-
     # Doppia chance
     if g == "1x": return hg >= ag
     if g == "x2": return ag >= hg
     if g == "12": return hg != ag
-
     # Over/Under
     if "over" in g:
         try:
-            soglia = float(''.join(c for c in g if c.isdigit() or c == '.'))
+            soglia = float("".join(c for c in g if c.isdigit() or c == "."))
             return totale > soglia
         except: return None
     if "under" in g:
         try:
-            soglia = float(''.join(c for c in g if c.isdigit() or c == '.'))
+            soglia = float("".join(c for c in g if c.isdigit() or c == "."))
             return totale < soglia
         except: return None
-
     # GG/NG
     if g in ["gg", "gol", "goal goal"]: return entrambe
     if g in ["ng", "no gol", "no goal"]: return not entrambe
+    return None
 
-    return None  # Non riconosciuta
-
-# ── Quote ─────────────────────────────────────────────────────
 _odds_cache = []
 _odds_cache_time = 0
 
 def load_all_odds():
     global _odds_cache, _odds_cache_time
     now = time.time()
-    if now - _odds_cache_time < 43200:  # Cache 12 ore
+    if now - _odds_cache_time < 43200:
         return _odds_cache
     all_events = []
     sport_keys = [
@@ -194,7 +187,6 @@ def get_odds(home, away):
             return best
     return {}
 
-# ── Dati partite ─────────────────────────────────────────────
 def get_matches(date=None):
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
     if not date:
@@ -223,6 +215,24 @@ def get_live_matches():
             filtered.append(m)
     return filtered
 
+def get_recent_form(team_id, league_id, season):
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": APIFOOTBALL}
+    data = api_get(url, headers, {"team": team_id, "league": league_id,
+                                   "season": season, "last": 5, "status": "FT"})
+    form = []
+    for m in data.get("response", []):
+        try:
+            home_id = m["teams"]["home"]["id"]
+            hg = m["goals"]["home"] or 0
+            ag = m["goals"]["away"] or 0
+            r = "V" if (team_id == home_id and hg > ag) or (team_id != home_id and ag > hg) \
+                else ("P" if hg == ag else "S")
+            form.append(f"{m['teams']['home']['name']} {hg}-{ag} {m['teams']['away']['name']} ({r})")
+        except:
+            continue
+    return form
+
 def get_fixture_result(fixture_id):
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": APIFOOTBALL}
@@ -235,8 +245,8 @@ def get_fixture_result(fixture_id):
         return None, None, None, None
     hg = m["goals"]["home"] or 0
     ag = m["goals"]["away"] or 0
-    esito_1x2 = "1" if hg > ag else ("X" if hg == ag else "2")
-    return esito_1x2, f"{hg}-{ag}", hg, ag
+    esito = "1" if hg > ag else ("X" if hg == ag else "2")
+    return esito, f"{hg}-{ag}", hg, ag
 
 def search_team_matches(team_name):
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -247,86 +257,100 @@ def search_team_matches(team_name):
         headers = {"x-apisports-key": APIFOOTBALL}
         data = api_get(url, headers, {"date": date})
         for m in data.get("response", []):
-            if team_name.lower() in m['teams']['home']['name'].lower() or \
-               team_name.lower() in m['teams']['away']['name'].lower():
+            if team_name.lower() in m["teams"]["home"]["name"].lower() or \
+               team_name.lower() in m["teams"]["away"]["name"].lower():
                 results.append(m)
     return results
 
-# ── Analisi Claude ───────────────────────────────────────────
 def parse_json(text):
     try:
-        clean = text.strip().replace('```json','').replace('```','').strip()
-        if clean.startswith('json'):
+        clean = text.strip().replace("```json","").replace("```","").strip()
+        if clean.startswith("json"):
             clean = clean[4:].strip()
-        start = clean.find('{')
-        end = clean.rfind('}')
+        start = clean.find("{")
+        end = clean.rfind("}")
         if start != -1 and end != -1:
             clean = clean[start:end+1]
         return json.loads(clean)
     except:
         return {}
 
-def analyze_prematch(m, odds):
-    home = m['teams']['home']['name']
-    away = m['teams']['away']['name']
-    league = m['league']['name'].lower()
-    round_info = m['league'].get('round','').lower()
-    if any(k in league for k in ['champions','europa','conference','cup','coppa','pokal']):
-        if any(k in round_info for k in ['final','semi','quarter','quarti']):
+def analyze_prematch(m, form_h, form_a, odds):
+    home = m["teams"]["home"]["name"]
+    away = m["teams"]["away"]["name"]
+    league = m["league"]["name"].lower()
+    round_info = m["league"].get("round","").lower()
+    if any(k in league for k in ["champions","europa","conference","cup","coppa","pokal"]):
+        if any(k in round_info for k in ["final","semi","quarter","quarti"]):
             importanza = "FINALE/SEMIFINALE - tattica conservativa, meno gol"
         else:
             importanza = "COPPA - possibili rotazioni"
     else:
         importanza = "CAMPIONATO REGOLARE"
 
+    # Calcola probabilita implicite dalle quote
+    q1 = odds.get("1", 0)
+    qx = odds.get("X", 0)
+    q2 = odds.get("2", 0)
+    prob_info = ""
+    if q1 and qx and q2:
+        p1 = round(1/q1*100, 1)
+        px = round(1/qx*100, 1)
+        p2 = round(1/q2*100, 1)
+        p1x = round((1/q1 + 1/qx)*100, 1)
+        px2 = round((1/qx + 1/q2)*100, 1)
+        p12 = round((1/q1 + 1/q2)*100, 1)
+        prob_info = f"Prob implicite: 1={p1}% X={px}% 2={p2}% | 1X={p1x}% X2={px2}% 12={p12}%"
+
     prompt = f"""Analista scommesse esperto. Analizza {home} vs {away}.
 IMPORTANZA: {importanza}
-QUOTE 1X2: 1={odds.get('1','N/D')} X={odds.get('X','N/D')} 2={odds.get('2','N/D')}
-Individua LA SINGOLA MIGLIORE value bet tra:
-- 1X2: 1, X, 2
-- Doppia chance: 1X, X2, 12
-- Over/Under: Over 2.5, Under 2.5, Over 1.5, Under 1.5
-- GG (entrambe segnano), NG (nessuna segna)
-Usa le quote per capire le probabilita implicite e trova valore reale.
+FORMA CASA (ultime 5): {form_h}
+FORMA OSPITE (ultime 5): {form_a}
+QUOTE 1X2: 1={q1} X={qx} 2={q2}
+{prob_info}
+Individua LA SINGOLA MIGLIORE value bet tra queste opzioni:
+- 1X2: 1 (vittoria casa), X (pareggio), 2 (vittoria ospite)
+- Doppia chance: 1X (casa o pareggio), X2 (pareggio o ospite), 12 (no pareggio)
+- Over/Under: Over 1.5, Under 1.5, Over 2.5, Under 2.5, Over 3.5, Under 3.5, Over 4.5, Under 4.5
+- GG (entrambe segnano), NG (almeno una non segna)
+Analizza forma recente e probabilita implicite per trovare la giocata con piu valore.
 Rispondi SOLO con JSON valido senza backtick:
-{{"giocata":"es. 1 o X2 o Over 2.5 o GG","quota":X,"motivazione":"massimo 1 riga","confidence":X}}"""
+{{"giocata":"es. 1 o X2 o Over 2.5 o GG","quota":X,"motivazione":"massimo 1 riga concisa","confidence":X}}"""
 
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001", max_tokens=250,
+        model="claude-haiku-4-5-20251001", max_tokens=300,
         messages=[{"role": "user", "content": prompt}]
     )
     return msg.content[0].text
 
 def analyze_live(m, odds):
-    home = m['teams']['home']['name']
-    away = m['teams']['away']['name']
-    score = m['goals']
-    minute = m['fixture']['status'].get('elapsed', '?')
+    home = m["teams"]["home"]["name"]
+    away = m["teams"]["away"]["name"]
+    score = m["goals"]
+    minute = m["fixture"]["status"].get("elapsed", "?")
     try:
-        elapsed_int = int(str(minute).replace('+','').strip())
+        elapsed_int = int(str(minute).replace("+","").strip())
     except:
         elapsed_int = 45
-
     if elapsed_int <= 45:
         focus = "Giocate su risultato finale o Over/Under totale"
     elif elapsed_int <= 60:
         focus = "Analizza momentum. Giocate su risultato o GG/NG"
     else:
-        focus = "Oltre 60'. Preferisci Over/Under 2T o prossimo gol"
+        focus = "Oltre 60. Preferisci Over/Under 2T o prossimo gol"
 
-    prompt = f"""Analista LIVE. {home} vs {away} - min {minute}' - {score.get('home',0)}-{score.get('away',0)}
-QUOTE 1X2: {odds}
+    prompt = f"""Analista LIVE. {home} vs {away} - min {minute} - {score.get("home",0)}-{score.get("away",0)}
+QUOTE: {odds}
 {focus}
 Rispondi SOLO con JSON valido:
-{{"giocata":"descrizione","quota":X,"motivazione":"1 riga","confidence":X,"rischio":"basso/medio/alto"}}"""
+{{"giocata":"descrizione","quota":X,"motivazione":"max 2 righe","confidence":X,"rischio":"basso/medio/alto"}}"""
 
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001", max_tokens=250,
+        model="claude-haiku-4-5-20251001", max_tokens=300,
         messages=[{"role": "user", "content": prompt}]
     )
     return msg.content[0].text
 
-# ── Telegram ─────────────────────────────────────────────────
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     for attempt in range(3):
@@ -360,15 +384,14 @@ def send_telegram_admin(text):
             print(f"Errore Admin: {e}")
             time.sleep(3)
 
-# ── Formattazione ─────────────────────────────────────────────
 def format_prematch(m, a_raw, odds):
     a = parse_json(a_raw)
-    home = m['teams']['home']['name']
-    away = m['teams']['away']['name']
-    kick_utc = datetime.fromisoformat(m['fixture']['date'].replace('Z', '+00:00'))
+    home = m["teams"]["home"]["name"]
+    away = m["teams"]["away"]["name"]
+    kick_utc = datetime.fromisoformat(m["fixture"]["date"].replace("Z", "+00:00"))
     kick_it = kick_utc.astimezone(timezone(timedelta(hours=2)))
     kickoff = kick_it.strftime("%H:%M")
-    conf = int(a.get('confidence', 0))
+    conf = int(a.get("confidence", 0))
     star = "\u2b50 <b>TOP VALUE BET</b>\n" if conf >= 65 else ""
     odds_str = ""
     if odds:
@@ -383,11 +406,11 @@ def format_prematch(m, a_raw, odds):
 
 def format_live(m, a_raw):
     a = parse_json(a_raw)
-    home = m['teams']['home']['name']
-    away = m['teams']['away']['name']
-    score = m['goals']
-    minute = m['fixture']['status'].get('elapsed', '?')
-    rischio = a.get('rischio', 'N/D')
+    home = m["teams"]["home"]["name"]
+    away = m["teams"]["away"]["name"]
+    score = m["goals"]
+    minute = m["fixture"]["status"].get("elapsed", "?")
+    rischio = a.get("rischio", "N/D")
     rischio_emoji = "\U0001f7e2" if rischio == "basso" else ("\U0001f7e1" if rischio == "medio" else "\U0001f534")
     return (
         f"\U0001f534 <b>{home} vs {away}</b> {minute}' | {score.get('home',0)}-{score.get('away',0)}\n"
@@ -402,7 +425,6 @@ def group_by_league(matches):
         leagues.setdefault(key, []).append(m)
     return leagues
 
-# ── Jobs ─────────────────────────────────────────────────────
 def run_analysis(matches, label="oggi"):
     global stop_analysis
     stop_analysis = False
@@ -418,26 +440,32 @@ def run_analysis(matches, label="oggi"):
             if stop_analysis:
                 send_telegram("\U0001f6d1 Analisi fermata.")
                 return
-            home = m['teams']['home']['name']
-            away = m['teams']['away']['name']
+            home = m["teams"]["home"]["name"]
+            away = m["teams"]["away"]["name"]
             print(f"Analisi: {home} vs {away}...")
             try:
+                league_id = m["league"]["id"]
+                season = m["league"]["season"]
+                home_id = m["teams"]["home"]["id"]
+                away_id = m["teams"]["away"]["id"]
+                form_h = get_recent_form(home_id, league_id, season)
+                form_a = get_recent_form(away_id, league_id, season)
                 odds = get_odds(home, away)
-                a_raw = analyze_prematch(m, odds)
+                a_raw = analyze_prematch(m, form_h, form_a, odds)
                 a = parse_json(a_raw)
                 block = format_prematch(m, a_raw, odds)
                 blocks.append(block)
                 try:
-                    quota_num = float(str(a.get('quota', 1.0)).replace(',', '.'))
+                    quota_num = float(str(a.get("quota", 1.0)).replace(",", "."))
                 except:
                     quota_num = 1.0
                 add_prediction({
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "match": f"{home} vs {away}",
                     "fixture_id": m["fixture"]["id"],
-                    "value_bet": a.get('giocata', ''),
+                    "value_bet": a.get("giocata", ""),
                     "quota": quota_num,
-                    "confidence": int(a.get('confidence', 0)),
+                    "confidence": int(a.get("confidence", 0)),
                     "result": "pending"
                 })
             except Exception as e:
@@ -483,7 +511,7 @@ def live_job():
     results_by_league = {}
 
     def analyze_one_live(m):
-        odds = get_odds(m['teams']['home']['name'], m['teams']['away']['name'])
+        odds = get_odds(m["teams"]["home"]["name"], m["teams"]["away"]["name"])
         a_raw = analyze_live(m, odds)
         return format_live(m, a_raw)
 
@@ -528,10 +556,8 @@ def check_and_report_results():
         if esito_1x2 is None:
             continue
         giocata = h.get("value_bet", "")
-        # Verifica esito con logica specifica per tipo di giocata
         corretto = verifica_giocata(giocata, hg, ag)
         if corretto is None:
-            # Giocata non riconosciuta — fallback su 1X2
             corretto = esito_1x2 == giocata
         update_prediction(h["match"], today, "win" if corretto else "loss", esito_1x2, score)
         updated += 1
@@ -587,7 +613,7 @@ def multipla_job():
     quota_combined = 1.0
     for s in selezioni:
         try:
-            q = float(str(s.get('quota', 1.0)).replace(',', '.'))
+            q = float(str(s.get("quota", 1.0)).replace(",", "."))
             if q > 1:
                 quota_combined *= q
         except:
@@ -607,7 +633,7 @@ def cerca_job(team_name):
         return
     msg = f"\U0001f4cb <b>Partite {team_name}:</b>\n\n"
     for m in matches:
-        kick_utc = datetime.fromisoformat(m['fixture']['date'].replace('Z', '+00:00'))
+        kick_utc = datetime.fromisoformat(m["fixture"]["date"].replace("Z", "+00:00"))
         kick_it = kick_utc.astimezone(timezone(timedelta(hours=2)))
         msg += f"\u26bd <b>{m['teams']['home']['name']} vs {m['teams']['away']['name']}</b>\n"
         msg += f"\U0001f3c6 {m['league']['name']} | \U0001f550 {kick_it.strftime('%d/%m %H:%M')}\n\n"
@@ -675,7 +701,7 @@ def listen_commands():
                         "/domani \u2014 Partite di domani\n"
                         "/live \u2014 Giocate live\n"
                         "/top \u2014 Top value bet oggi\n"
-                        "/multipla \u2014 Multipla del giorno\n"
+                        "/multipla \u2014 Multipla (3-5 selezioni)\n"
                         "/cerca [squadra] \u2014 Cerca squadra\n"
                         "/riepilogo \u2014 Risultati di oggi\n"
                         "/stats \u2014 Statistiche storiche\n"
@@ -702,7 +728,7 @@ if __name__ == "__main__":
     )
     t = threading.Thread(target=listen_commands, daemon=True)
     t.start()
-    schedule.every().day.at("23:00").do(check_and_report_results)
+    schedule.every().day.at("22:00").do(check_and_report_results)
     schedule.every(6).hours.do(watchdog)
     while True:
         schedule.run_pending()
