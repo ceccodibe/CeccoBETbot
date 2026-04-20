@@ -305,10 +305,16 @@ def analyze_prematch(m, form_h, form_a, odds):
         f"FORMA CASA (ultime 5): {form_h}\n"
         f"FORMA OSPITE (ultime 5): {form_a}\n"
         f"QUOTE 1X2: 1={q1} X={qx} 2={q2}\n"
-        f"{prob_info}\n"
-        "Individua LA SINGOLA MIGLIORE value bet tra: 1X2, doppia chance (1X/X2/12), "
-        "Over/Under (1.5/2.5/3.5/4.5), GG, NG.\n"
-        '{"giocata":"es. 1 o X2 o Over 2.5","quota":X,"motivazione":"max 1 riga","confidence":X}'
+        f"{prob_info}\n\n"
+        f"REGOLE BASATE SU DATI STORICI (425 previsioni risolte):\n"
+        f"- '1' ha 54.8% di successo: preferiscila quando la casa è favorita e in forma\n"
+        f"- '2' ha 31.8%: usala solo se l'ospite è chiaramente superiore\n"
+        f"- 'X', '1X', 'X2', '12': solo in caso di vera incertezza con valore nelle quote\n"
+        f"- Over/Under e GG/NG: usali SOLO se la forma di entrambe le squadre lo giustifica chiaramente\n"
+        f"- Assegna confidence 70+ solo con almeno 3 segnali concordanti (forma, quota, storia)\n"
+        f"- La fascia 60-69 è storicamente la meno affidabile: vai a 70+ o resta sotto 60\n\n"
+        f"Scegli LA MIGLIORE giocata tra: 1, X, 2, 1X, X2, 12, Over 1.5/2.5/3.5, Under 1.5/2.5/3.5, GG, NG.\n"
+        'Rispondi SOLO con questo JSON: {"giocata":"es. 1 o Over 2.5 o GG","quota":X,"motivazione":"max 1 riga","confidence":X}'
     )
 
     msg = client.messages.create(
@@ -331,17 +337,19 @@ def analyze_live(m, odds):
         elapsed_int = 45
 
     if elapsed_int <= 45:
-        focus = "Giocate su risultato finale o Over/Under totale"
+        focus = "Prediligi Over/Under totale o GG/NG basandoti sul ritmo di gioco. Usa 1X2 solo se c'è un vantaggio netto."
     elif elapsed_int <= 60:
-        focus = "Analizza momentum. Giocate su risultato o GG/NG"
+        focus = "Analizza il punteggio e il momentum. Priorità a Over/Under e GG/NG, poi eventualmente doppia chance."
     else:
-        focus = "Oltre 60'. Preferisci Over/Under o prossimo gol"
+        focus = "Oltre 60': punta su Over/Under parziale o GG/NG. Evita 1X2 a meno di situazione chiarissima."
 
     prompt = (
         f"{home} vs {away} \u2014 min {minute} \u2014 "
         f"{score.get('home',0)}-{score.get('away',0)}\n"
         f"QUOTE: {odds}\n"
         f"{focus}\n"
+        f"REGOLA: nel contesto live Over/Under e GG/NG offrono il miglior valore. "
+        f"Scegli la giocata con più valore reale tra Over/Under e GG/NG prima di considerare 1X2.\n"
         '{"giocata":"descrizione","quota":X,"motivazione":"max 2 righe","confidence":X,"rischio":"basso/medio/alto"}'
     )
 
@@ -391,6 +399,8 @@ def run_analysis(matches, label="oggi"):
                 add_prediction({
                     "date":       datetime.now().strftime("%Y-%m-%d"),
                     "match":      f"{home} vs {away}",
+                    "league":     m["league"]["name"],
+                    "country":    m["league"]["country"],
                     "fixture_id": m["fixture"]["id"],
                     "value_bet":  a.get("giocata", ""),
                     "quota":      quota_num,
