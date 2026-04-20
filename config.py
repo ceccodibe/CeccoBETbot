@@ -52,5 +52,5 @@ AUTO_NOTIFY_HOURS  = 2        # Ore prima del match per notifica automatica
 CONFIDENCE_MIN     = 60       # Confidence minima per top value bet
 LIVE_MIN_MINUTE    = 30       # Minuto minimo per analisi live
 LIVE_MAX_MINUTE    = 80       # Minuto massimo per analisi live
-ODDS_CACHE_SECONDS = 300      # Cache quote in secondi (5 minuti)
+ODDS_CACHE_SECONDS = 3600     # Cache quote in secondi (1 ora) — fetch h2h+totals+btts
 ADMIN_IDS          = [8317266009, 2129248376]

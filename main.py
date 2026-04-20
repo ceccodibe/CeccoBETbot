@@ -89,9 +89,14 @@ def api_get(url, headers, params, retries=3):
 # ── MongoDB ───────────────────────────────────────────────────
 
 def add_prediction(pred):
+    """Upsert on fixture_id+date to avoid duplicates if /analisi is run twice."""
     try:
         pred.pop("_id", None)
-        predictions_col.insert_one(pred)
+        predictions_col.update_one(
+            {"fixture_id": pred["fixture_id"], "date": pred["date"]},
+            {"$setOnInsert": pred},
+            upsert=True,
+        )
     except Exception as e:
         print(f"Errore MongoDB: {e}")
 
@@ -152,7 +157,11 @@ def load_all_odds():
         for sk in SPORT_KEYS:
             try:
                 url    = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
-                params = {"apiKey": ODDS_KEY, "regions": "eu", "markets": "h2h", "oddsFormat": "decimal"}
+                # fetch h2h + totals (Over/Under) + btts (GG/NG) in one request
+                params = {
+                    "apiKey": ODDS_KEY, "regions": "eu",
+                    "markets": "h2h,totals,btts", "oddsFormat": "decimal",
+                }
                 r      = requests.get(url, params=params, timeout=10)
                 data   = r.json()
                 if isinstance(data, list):
@@ -170,6 +179,7 @@ def load_all_odds():
 
 
 def get_odds(home, away):
+    """Returns best odds across bookmakers: 1X2, Over/Under, GG/NG."""
     data = load_all_odds()
     h, a = home.lower().strip(), away.lower().strip()
     for event in data:
@@ -177,24 +187,113 @@ def get_odds(home, away):
         ev_away = event.get("away_team", "").lower()
         if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
            (a in ev_away or ev_away in a or a.split()[0] in ev_away):
-            best = {"1": 0, "X": 0, "2": 0}
+            best = {"1": 0, "X": 0, "2": 0, "GG": 0, "NG": 0}
             for bk in event.get("bookmakers", []):
                 for market in bk.get("markets", []):
-                    if market.get("key") == "h2h":
-                        for o in market.get("outcomes", []):
-                            price = o.get("price", 0)
-                            name  = o.get("name", "").lower()
-                            if name == ev_home and price > best["1"]:
+                    mkey = market.get("key")
+                    for o in market.get("outcomes", []):
+                        price  = o.get("price", 0)
+                        name   = o.get("name", "")
+                        name_l = name.lower()
+                        desc   = o.get("description", "")  # e.g. "2.5" for totals
+                        if mkey == "h2h":
+                            if name_l == ev_home and price > best["1"]:
                                 best["1"] = price
-                            elif name == "draw" and price > best["X"]:
+                            elif name_l == "draw" and price > best["X"]:
                                 best["X"] = price
-                            elif name == ev_away and price > best["2"]:
+                            elif name_l == ev_away and price > best["2"]:
                                 best["2"] = price
+                        elif mkey == "totals":
+                            k = f"Over {desc}" if name_l == "over" else f"Under {desc}"
+                            if price > best.get(k, 0):
+                                best[k] = price
+                        elif mkey == "btts":
+                            if name_l == "yes" and price > best["GG"]:
+                                best["GG"] = price
+                            elif name_l == "no" and price > best["NG"]:
+                                best["NG"] = price
             return best
     return {}
 
 
+def get_real_quota(giocata, odds):
+    """Returns the real bookmaker quote for the suggested bet, 0 if not found."""
+    if not odds or not giocata:
+        return 0
+    g = giocata.strip()
+    if g in odds and odds[g]:
+        return odds[g]
+    g_l = g.lower()
+    for k, v in odds.items():
+        if k.lower() == g_l and v:
+            return v
+    # partial match for "Over 2.5" variants
+    for k, v in odds.items():
+        if g_l in k.lower() and v:
+            return v
+    return 0
+
+
+def calibrate_confidence(raw_conf, giocata):
+    """Adjusts model confidence using historical hit rates from 425 resolved bets."""
+    g = (giocata or "").lower().strip()
+    # Historical accuracy by bet type
+    if g == "1":                hist = 54.8
+    elif g == "2":              hist = 31.8
+    elif g == "x":              hist = 31.1
+    elif g in ("x2","1x","12"): hist = 27.6
+    else:                       hist = 35.0  # Over/Under/GG/NG: no reliable data yet
+
+    adj = raw_conf
+    # 60-69 band is anomalously poor (23.8%), worse than <50 (26.6%) — pull it down
+    if 60 <= raw_conf <= 69:
+        adj = raw_conf - 12
+    # Cap overconfidence for historically weak bet types
+    if hist < 35 and adj > 70:
+        adj = 65
+
+    return max(10, min(95, adj))
+
+
 # ── Football API ──────────────────────────────────────────────
+
+def get_team_stats(team_id, league_id, season):
+    """Returns avg goals for/against, clean sheet % and no-score % for a team."""
+    url  = "https://v3.football.api-sports.io/teams/statistics"
+    data = api_get(url, {"x-apisports-key": APIFOOTBALL},
+                   {"team": team_id, "league": league_id, "season": season})
+    r = data.get("response", {})
+    if not r:
+        return {}
+    try:
+        played       = r["games"]["played"]["total"] or 1
+        goals_for    = float(r["goals"]["for"]["average"]["total"] or 0)
+        goals_ag     = float(r["goals"]["against"]["average"]["total"] or 0)
+        clean_pct    = round(r["clean_sheet"]["total"] / played * 100)
+        no_score_pct = round(r["failed_to_score"]["total"] / played * 100)
+        return {
+            "avg_gf": goals_for, "avg_ga": goals_ag,
+            "clean_pct": clean_pct, "no_score_pct": no_score_pct,
+        }
+    except Exception:
+        return {}
+
+
+def get_h2h(home_id, away_id, limit=5):
+    """Returns last N head-to-head results between two teams."""
+    url  = "https://v3.football.api-sports.io/fixtures"
+    data = api_get(url, {"x-apisports-key": APIFOOTBALL},
+                   {"h2h": f"{home_id}-{away_id}", "last": limit, "status": "FT"})
+    results = []
+    for m in data.get("response", []):
+        try:
+            hg = m["goals"]["home"] or 0
+            ag = m["goals"]["away"] or 0
+            results.append(f"{m['teams']['home']['name']} {hg}-{ag} {m['teams']['away']['name']}")
+        except Exception:
+            continue
+    return results
+
 
 def get_matches(date=None):
     italy_time = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -273,7 +372,7 @@ def search_team_matches(team_name):
 
 # ── Claude analysis ───────────────────────────────────────────
 
-def analyze_prematch(m, form_h, form_a, odds):
+def analyze_prematch(m, form_h, form_a, odds, stats_h=None, stats_a=None, h2h=None):
     home       = m["teams"]["home"]["name"]
     away       = m["teams"]["away"]["name"]
     league     = m["league"]["name"].lower()
@@ -299,20 +398,39 @@ def analyze_prematch(m, form_h, form_a, odds):
         p12 = round((1/q1 + 1/q2)*100, 1)
         prob_info = f"Prob implicite: 1={p1}% X={px}% 2={p2}% | 1X={p1x}% X2={px2}% 12={p12}%"
 
+    # Extended odds (Over/Under, GG/NG)
+    ou_lines = [f"{k}={v}" for k, v in sorted(odds.items())
+                if k not in ("1","X","2","GG","NG") and v]
+    gg_ng    = f"GG={odds.get('GG',0)} NG={odds.get('NG',0)}"
+    ext_odds = f"Over/Under: {', '.join(ou_lines) or 'N/D'} | {gg_ng}"
+
+    # Team stats
+    def fmt_stats(s, name):
+        if not s:
+            return f"{name}: dati non disponibili"
+        return (
+            f"{name}: media gol fatti={s['avg_gf']} subiti={s['avg_ga']} "
+            f"clean sheet={s['clean_pct']}% no-gol={s['no_score_pct']}%"
+        )
+
     prompt = (
         f"Analizza {home} vs {away}.\n"
         f"IMPORTANZA: {importanza}\n"
         f"FORMA CASA (ultime 5): {form_h}\n"
         f"FORMA OSPITE (ultime 5): {form_a}\n"
+        f"{fmt_stats(stats_h, 'STATS CASA')}\n"
+        f"{fmt_stats(stats_a, 'STATS OSPITE')}\n"
+        f"H2H (ultimi 5): {h2h or 'N/D'}\n"
         f"QUOTE 1X2: 1={q1} X={qx} 2={q2}\n"
-        f"{prob_info}\n\n"
+        f"{prob_info}\n"
+        f"QUOTE ESTESE: {ext_odds}\n\n"
         f"REGOLE BASATE SU DATI STORICI (425 previsioni risolte):\n"
-        f"- '1' ha 54.8% di successo: preferiscila quando la casa è favorita e in forma\n"
-        f"- '2' ha 31.8%: usala solo se l'ospite è chiaramente superiore\n"
+        f"- '1' ha 54.8% di successo storico: preferiscila quando la casa \xe8 favorita e in forma\n"
+        f"- '2' ha 31.8%: usala solo se l'ospite \xe8 chiaramente superiore\n"
         f"- 'X', '1X', 'X2', '12': solo in caso di vera incertezza con valore nelle quote\n"
-        f"- Over/Under e GG/NG: usali SOLO se la forma di entrambe le squadre lo giustifica chiaramente\n"
-        f"- Assegna confidence 70+ solo con almeno 3 segnali concordanti (forma, quota, storia)\n"
-        f"- La fascia 60-69 è storicamente la meno affidabile: vai a 70+ o resta sotto 60\n\n"
+        f"- Over/Under e GG/NG: usa le quote reali qui sopra e le stats gol per valutare\n"
+        f"- Assegna confidence 70+ solo con almeno 3 segnali concordanti (forma, stats, quote)\n"
+        f"- La fascia 60-69 \xe8 storicamente la meno affidabile: vai a 70+ o resta sotto 60\n\n"
         f"Scegli LA MIGLIORE giocata tra: 1, X, 2, 1X, X2, 12, Over 1.5/2.5/3.5, Under 1.5/2.5/3.5, GG, NG.\n"
         'Rispondi SOLO con questo JSON: {"giocata":"es. 1 o Over 2.5 o GG","quota":X,"motivazione":"max 1 riga","confidence":X}'
     )
@@ -388,23 +506,30 @@ def run_analysis(matches, label="oggi"):
                 away_id   = m["teams"]["away"]["id"]
                 form_h    = get_recent_form(home_id, league_id, season)
                 form_a    = get_recent_form(away_id, league_id, season)
+                stats_h   = get_team_stats(home_id, league_id, season)
+                stats_a   = get_team_stats(away_id, league_id, season)
+                h2h       = get_h2h(home_id, away_id)
                 odds      = get_odds(home, away)
-                a_raw     = analyze_prematch(m, form_h, form_a, odds)
+                a_raw     = analyze_prematch(m, form_h, form_a, odds, stats_h, stats_a, h2h)
                 a         = parse_json(a_raw)
-                blocks.append(format_match_block(m, a_raw, odds))
+                giocata   = a.get("giocata", "")
+                # use real bookmaker quote; fall back to Claude's value
+                real_q    = get_real_quota(giocata, odds)
                 try:
-                    quota_num = float(str(a.get("quota", 1.0)).replace(",", "."))
+                    quota_num = real_q if real_q else float(str(a.get("quota", 1.0)).replace(",", "."))
                 except Exception:
                     quota_num = 1.0
+                cal_conf  = calibrate_confidence(int(a.get("confidence", 0)), giocata)
+                blocks.append(format_match_block(m, a_raw, odds))
                 add_prediction({
                     "date":       datetime.now().strftime("%Y-%m-%d"),
                     "match":      f"{home} vs {away}",
                     "league":     m["league"]["name"],
                     "country":    m["league"]["country"],
                     "fixture_id": m["fixture"]["id"],
-                    "value_bet":  a.get("giocata", ""),
+                    "value_bet":  giocata,
                     "quota":      quota_num,
-                    "confidence": int(a.get("confidence", 0)),
+                    "confidence": cal_conf,
                     "result":     "pending",
                 })
             except Exception as e:
