@@ -29,7 +29,7 @@ EXCLUDE_KEYWORDS = [
 # ── Sport keys per The Odds API ───────────────────────────────
 SPORT_KEYS = [
     "soccer_italy_serie_a", "soccer_italy_serie_b",
-    "soccer_england_epl", "soccer_efl_champ", "soccer_england_league1",
+    "soccer_england_premier_league", "soccer_efl_champ", "soccer_england_league1",
     "soccer_france_ligue_one", "soccer_france_ligue_two",
     "soccer_spain_la_liga", "soccer_spain_segunda_division",
     "soccer_germany_bundesliga", "soccer_germany_bundesliga2",
@@ -37,9 +37,8 @@ SPORT_KEYS = [
     "soccer_netherlands_eredivisie",
     "soccer_belgium_first_div",
     "soccer_turkey_super_lig",
-    "soccer_brazil_campeonato", "soccer_brazil_campeonato_serie_b",
+    "soccer_brazil_campeonato",
     "soccer_argentina_primera_division",
-    "soccer_colombia_primera_a",
     "soccer_usa_mls",
     "soccer_uefa_champs_league",
     "soccer_uefa_europa_league",

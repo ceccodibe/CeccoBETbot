@@ -180,21 +180,29 @@ def load_all_odds():
         all_events = []
         for sk in SPORT_KEYS:
             try:
-                url    = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
-                params = {
-                    "apiKey": ODDS_KEY, "regions": "eu",
-                    "markets": "h2h,totals,btts", "oddsFormat": "decimal",
-                }
-                r    = requests.get(url, params=params, timeout=10)
-                data = r.json()
-                if isinstance(data, list):
-                    all_events.extend(data)
-                elif isinstance(data, dict):
+                url = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
+                for markets in ("h2h,totals,btts", "h2h,totals"):
+                    params = {
+                        "apiKey": ODDS_KEY, "regions": "eu",
+                        "markets": markets, "oddsFormat": "decimal",
+                    }
+                    r    = requests.get(url, params=params, timeout=10)
+                    data = r.json()
+                    if isinstance(data, list):
+                        all_events.extend(data)
+                        break
                     code = data.get("error_code", "")
                     msg  = data.get("message", str(data))
+                    if code == "INVALID_MARKET" and markets == "h2h,totals,btts":
+                        print(f"[{sk}] btts non supportato, retry senza btts")
+                        time.sleep(0.2)
+                        continue
                     print(f"Odds API errore [{sk}]: {code} — {msg}")
                     if code == "OUT_OF_USAGE_CREDITS":
                         break
+                    break
+                else:
+                    pass
                 time.sleep(0.3)
             except Exception as e:
                 print(f"Odds error {sk}: {e}")
