@@ -36,7 +36,6 @@ SPORT_KEYS = [
     "soccer_portugal_primeira_liga",
     "soccer_netherlands_eredivisie",
     "soccer_belgium_first_div",
-    "soccer_turkey_super_lig",
     "soccer_brazil_campeonato",
     "soccer_argentina_primera_division",
     "soccer_usa_mls",
