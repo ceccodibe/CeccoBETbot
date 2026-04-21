@@ -1,4 +1,4 @@
-import os, requests, anthropic, time, threading, schedule
+import os, re, requests, anthropic, time, threading, schedule
 from pymongo import MongoClient
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -147,6 +147,30 @@ def verifica_giocata(giocata, hg, ag):
 
 # ── Odds API ──────────────────────────────────────────────────
 
+_STRIP_WORDS = re.compile(
+    r'\b(fc|ac|as|afc|cf|sc|rc|us|ss|ssd|asd|rcd|ca|cd|ud|real|atletico|'
+    r'athletic|deportivo|sporting|calcio|city|united|town|county|rovers|'
+    r'wanderers|hotspur|albion|wednesday|forest|palace|villa|ham)\b'
+)
+
+def _norm(name: str) -> str:
+    n = re.sub(r"['\-.]", " ", name.lower())
+    n = _STRIP_WORDS.sub("", n)
+    return " ".join(n.split())
+
+
+def _teams_match(api_name: str, odds_name: str) -> bool:
+    a, b = _norm(api_name), _norm(odds_name)
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return True
+    ta, tb = set(a.split()), set(b.split())
+    common = ta & tb - {""}
+    short  = min(len(ta), len(tb))
+    return bool(common) and len(common) >= max(1, short - 1)
+
+
 def load_all_odds():
     global _odds_cache, _odds_cache_time
     now = time.time()
@@ -157,18 +181,20 @@ def load_all_odds():
         for sk in SPORT_KEYS:
             try:
                 url    = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
-                # fetch h2h + totals (Over/Under) + btts (GG/NG) in one request
                 params = {
                     "apiKey": ODDS_KEY, "regions": "eu",
                     "markets": "h2h,totals,btts", "oddsFormat": "decimal",
                 }
-                r      = requests.get(url, params=params, timeout=10)
-                data   = r.json()
+                r    = requests.get(url, params=params, timeout=10)
+                data = r.json()
                 if isinstance(data, list):
                     all_events.extend(data)
-                elif data.get("error_code") == "OUT_OF_USAGE_CREDITS":
-                    print("Odds: crediti esauriti!")
-                    break
+                elif isinstance(data, dict):
+                    code = data.get("error_code", "")
+                    msg  = data.get("message", str(data))
+                    print(f"Odds API errore [{sk}]: {code} — {msg}")
+                    if code == "OUT_OF_USAGE_CREDITS":
+                        break
                 time.sleep(0.3)
             except Exception as e:
                 print(f"Odds error {sk}: {e}")
@@ -181,38 +207,41 @@ def load_all_odds():
 def get_odds(home, away):
     """Returns best odds across bookmakers: 1X2, Over/Under, GG/NG."""
     data = load_all_odds()
-    h, a = home.lower().strip(), away.lower().strip()
+    print(f"[Odds] Cache contiene {len(data)} eventi. Cerco: '{home}' vs '{away}'")
     for event in data:
-        ev_home = event.get("home_team", "").lower()
-        ev_away = event.get("away_team", "").lower()
-        if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
-           (a in ev_away or ev_away in a or a.split()[0] in ev_away):
-            best = {"1": 0, "X": 0, "2": 0, "GG": 0, "NG": 0}
-            for bk in event.get("bookmakers", []):
-                for market in bk.get("markets", []):
-                    mkey = market.get("key")
-                    for o in market.get("outcomes", []):
-                        price  = o.get("price", 0)
-                        name   = o.get("name", "")
-                        name_l = name.lower()
-                        desc   = o.get("description", "")  # e.g. "2.5" for totals
-                        if mkey == "h2h":
-                            if name_l == ev_home and price > best["1"]:
-                                best["1"] = price
-                            elif name_l == "draw" and price > best["X"]:
-                                best["X"] = price
-                            elif name_l == ev_away and price > best["2"]:
-                                best["2"] = price
-                        elif mkey == "totals":
-                            k = f"Over {desc}" if name_l == "over" else f"Under {desc}"
-                            if price > best.get(k, 0):
-                                best[k] = price
-                        elif mkey == "btts":
-                            if name_l == "yes" and price > best["GG"]:
-                                best["GG"] = price
-                            elif name_l == "no" and price > best["NG"]:
-                                best["NG"] = price
-            return best
+        ev_home = event.get("home_team", "")
+        ev_away = event.get("away_team", "")
+        if not (_teams_match(home, ev_home) and _teams_match(away, ev_away)):
+            print(f"[Odds] No match: evento='{ev_home}' vs '{ev_away}'")
+            continue
+        best = {"1": 0, "X": 0, "2": 0, "GG": 0, "NG": 0}
+        ev_home_l = ev_home.lower()
+        ev_away_l = ev_away.lower()
+        for bk in event.get("bookmakers", []):
+            for market in bk.get("markets", []):
+                mkey = market.get("key")
+                for o in market.get("outcomes", []):
+                    price  = o.get("price", 0)
+                    name_l = o.get("name", "").lower()
+                    point  = o.get("point", "")
+                    if mkey == "h2h":
+                        if name_l == ev_home_l and price > best["1"]:
+                            best["1"] = price
+                        elif name_l == "draw" and price > best["X"]:
+                            best["X"] = price
+                        elif name_l == ev_away_l and price > best["2"]:
+                            best["2"] = price
+                    elif mkey == "totals":
+                        k = f"Over {point}" if name_l == "over" else f"Under {point}"
+                        if price > best.get(k, 0):
+                            best[k] = price
+                    elif mkey == "btts":
+                        if name_l == "yes" and price > best["GG"]:
+                            best["GG"] = price
+                        elif name_l == "no" and price > best["NG"]:
+                            best["NG"] = price
+        return best
+    print(f"[Odds] nessun evento trovato per: {home} vs {away}")
     return {}
 
 
