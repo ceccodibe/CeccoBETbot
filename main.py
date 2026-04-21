@@ -1,4 +1,5 @@
 import os, re, requests, anthropic, time, threading, schedule
+from math import exp, factorial
 from pymongo import MongoClient
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -30,9 +31,15 @@ stop_analysis = threading.Event()
 stop_live     = threading.Event()
 
 # Thread-safe odds cache
-_odds_cache      = []
-_odds_cache_time = 0.0
-_odds_lock       = threading.Lock()
+_odds_cache          = []
+_odds_cache_time     = 0.0
+_live_odds_cache_time = 0.0
+_odds_lock           = threading.Lock()
+LIVE_ODDS_CACHE_SECONDS = 300  # 5 min for live
+
+# Dynamic accuracy cache (refreshed daily from MongoDB)
+_accuracy_cache      = {}
+_accuracy_cache_time = 0.0
 
 # Cached system prompts — one-time cost, then served from Anthropic cache
 _SYS_PREMATCH = [{
@@ -147,6 +154,53 @@ def verifica_giocata(giocata, hg, ag):
 
 # ── Odds API ──────────────────────────────────────────────────
 
+# Leagues that support btts market on The Odds API
+_BTTS_SPORT_KEYS = {
+    "soccer_italy_serie_a", "soccer_italy_serie_b",
+    "soccer_efl_champ", "soccer_england_league1",
+    "soccer_france_ligue_one", "soccer_france_ligue_two",
+    "soccer_spain_la_liga", "soccer_germany_bundesliga",
+    "soccer_germany_bundesliga2", "soccer_portugal_primeira_liga",
+    "soccer_netherlands_eredivisie", "soccer_belgium_first_div",
+    "soccer_argentina_primera_division", "soccer_usa_mls",
+    "soccer_uefa_champs_league", "soccer_uefa_europa_league",
+    "soccer_uefa_europa_conference_league",
+}
+
+# Common name mismatches between API-Football and The Odds API
+_TEAM_ALIASES = {
+    "athletic bilbao":          "athletic club",
+    "atletico de madrid":       "atletico madrid",
+    "paris saint-germain":      "paris saint germain",
+    "psg":                      "paris saint germain",
+    "inter milan":              "inter",
+    "ac milan":                 "milan",
+    "ss lazio":                 "lazio",
+    "ssc napoli":               "napoli",
+    "as roma":                  "roma",
+    "juventus fc":              "juventus",
+    "fc barcelona":             "barcelona",
+    "real madrid cf":           "real madrid",
+    "tottenham hotspur":        "tottenham",
+    "newcastle united":         "newcastle",
+    "west ham united":          "west ham",
+    "wolverhampton wanderers":  "wolves",
+    "brighton & hove albion":   "brighton",
+    "nottingham forest":        "nott'm forest",
+    "sheffield united":         "sheffield utd",
+    "manchester united":        "man utd",
+    "manchester city":          "man city",
+    "bayer leverkusen":         "leverkusen",
+    "rb leipzig":               "leipzig",
+    "borussia dortmund":        "dortmund",
+    "borussia monchengladbach": "m'gladbach",
+    "eintracht frankfurt":      "frankfurt",
+    "deportivo alaves":         "alaves",
+    "rcd espanyol":             "espanyol",
+    "real valladolid":          "valladolid",
+    "club atletico osasuna":    "osasuna",
+}
+
 _STRIP_WORDS = re.compile(
     r'\b(fc|ac|as|afc|cf|sc|rc|us|ss|ssd|asd|rcd|ca|cd|ud|real|atletico|'
     r'athletic|deportivo|sporting|calcio|city|united|town|county|rovers|'
@@ -171,13 +225,16 @@ def _teams_match(api_name: str, odds_name: str) -> bool:
     return bool(common) and len(common) >= max(1, short - 1)
 
 
-def load_all_odds():
-    global _odds_cache, _odds_cache_time
+def load_all_odds(live=False):
+    global _odds_cache, _odds_cache_time, _live_odds_cache_time
     now = time.time()
+    ttl = LIVE_ODDS_CACHE_SECONDS if live else ODDS_CACHE_SECONDS
+    ref = _live_odds_cache_time if live else _odds_cache_time
     with _odds_lock:
-        if now - _odds_cache_time < ODDS_CACHE_SECONDS:
+        if now - ref < ttl:
             return _odds_cache
         all_events = []
+        btts_index = {}  # event_id -> {GG, NG}
         for sk in SPORT_KEYS:
             try:
                 url    = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
@@ -185,8 +242,8 @@ def load_all_odds():
                     "apiKey": ODDS_KEY, "regions": "eu",
                     "markets": "h2h,totals", "oddsFormat": "decimal",
                 }
-                r      = requests.get(url, params=params, timeout=10)
-                data   = r.json()
+                r    = requests.get(url, params=params, timeout=10)
+                data = r.json()
                 if isinstance(data, list):
                     all_events.extend(data)
                 elif data.get("error_code") == "OUT_OF_USAGE_CREDITS":
@@ -195,41 +252,90 @@ def load_all_odds():
                 time.sleep(0.3)
             except Exception as e:
                 print(f"Odds error {sk}: {e}")
-        _odds_cache      = all_events
-        _odds_cache_time = now
-        print(f"Quote caricate: {len(all_events)} eventi")
+        # Second pass: fetch btts only for supported leagues
+        for sk in SPORT_KEYS:
+            if sk not in _BTTS_SPORT_KEYS:
+                continue
+            try:
+                url    = f"https://api.the-odds-api.com/v4/sports/{sk}/odds/"
+                params = {
+                    "apiKey": ODDS_KEY, "regions": "eu",
+                    "markets": "btts", "oddsFormat": "decimal",
+                }
+                r    = requests.get(url, params=params, timeout=10)
+                data = r.json()
+                if isinstance(data, list):
+                    for ev in data:
+                        eid  = ev.get("id")
+                        gg, ng = 0, 0
+                        for bk in ev.get("bookmakers", []):
+                            for mkt in bk.get("markets", []):
+                                if mkt.get("key") != "btts":
+                                    continue
+                                for o in mkt.get("outcomes", []):
+                                    p = o.get("price", 0)
+                                    if o.get("name", "").lower() == "yes" and p > gg:
+                                        gg = p
+                                    elif o.get("name", "").lower() == "no" and p > ng:
+                                        ng = p
+                        if gg or ng:
+                            btts_index[eid] = {"GG": gg, "NG": ng}
+                elif data.get("error_code") == "OUT_OF_USAGE_CREDITS":
+                    break
+                time.sleep(0.3)
+            except Exception as e:
+                print(f"Odds btts error {sk}: {e}")
+        # Merge btts into main events
+        for ev in all_events:
+            bt = btts_index.get(ev.get("id"), {})
+            ev["_btts"] = bt
+        _odds_cache          = all_events
+        _odds_cache_time     = now
+        _live_odds_cache_time = now
+        print(f"Quote caricate: {len(all_events)} eventi ({len(btts_index)} con btts)")
         return _odds_cache
 
 
-def get_odds(home, away):
+def _resolve_alias(name: str) -> str:
+    n = name.lower().strip()
+    return _TEAM_ALIASES.get(n, n)
+
+
+def get_odds(home, away, live=False):
     """Returns best odds across bookmakers: 1X2, Over/Under, GG/NG."""
-    data = load_all_odds()
-    h, a = home.lower().strip(), away.lower().strip()
+    data = load_all_odds(live=live)
+    h = _resolve_alias(home)
+    a = _resolve_alias(away)
     for event in data:
-        ev_home = event.get("home_team", "").lower()
-        ev_away = event.get("away_team", "").lower()
-        if (h in ev_home or ev_home in h or h.split()[0] in ev_home) and \
-           (a in ev_away or ev_away in a or a.split()[0] in ev_away):
-            best = {"1": 0, "X": 0, "2": 0, "GG": 0, "NG": 0}
-            for bk in event.get("bookmakers", []):
-                for market in bk.get("markets", []):
-                    mkey = market.get("key")
-                    for o in market.get("outcomes", []):
-                        price  = o.get("price", 0)
-                        name_l = o.get("name", "").lower()
-                        desc   = o.get("description", "")
-                        if mkey == "h2h":
-                            if name_l == ev_home and price > best["1"]:
-                                best["1"] = price
-                            elif name_l == "draw" and price > best["X"]:
-                                best["X"] = price
-                            elif name_l == ev_away and price > best["2"]:
-                                best["2"] = price
-                        elif mkey == "totals":
-                            k = f"Over {desc}" if name_l == "over" else f"Under {desc}"
-                            if price > best.get(k, 0):
-                                best[k] = price
-            return best
+        ev_home = _resolve_alias(event.get("home_team", ""))
+        ev_away = _resolve_alias(event.get("away_team", ""))
+        if not ((h in ev_home or ev_home in h or h.split()[0] in ev_home) and
+                (a in ev_away or ev_away in a or a.split()[0] in ev_away)):
+            continue
+        best = {"1": 0, "X": 0, "2": 0, "GG": 0, "NG": 0}
+        # Merge btts pre-fetched data
+        bt = event.get("_btts", {})
+        if bt.get("GG"): best["GG"] = bt["GG"]
+        if bt.get("NG"): best["NG"] = bt["NG"]
+        for bk in event.get("bookmakers", []):
+            for market in bk.get("markets", []):
+                mkey = market.get("key")
+                for o in market.get("outcomes", []):
+                    price  = o.get("price", 0)
+                    name_l = o.get("name", "").lower()
+                    desc   = o.get("description", "")
+                    if mkey == "h2h":
+                        if name_l == ev_home and price > best["1"]:
+                            best["1"] = price
+                        elif name_l == "draw" and price > best["X"]:
+                            best["X"] = price
+                        elif name_l == ev_away and price > best["2"]:
+                            best["2"] = price
+                    elif mkey == "totals":
+                        k = f"Over {desc}" if name_l == "over" else f"Under {desc}"
+                        if price > best.get(k, 0):
+                            best[k] = price
+        return best
     return {}
 
 
@@ -251,21 +357,91 @@ def get_real_quota(giocata, odds):
     return 0
 
 
+def estimate_probs(stats_h, stats_a):
+    """Returns (p1, px, p2) as % using a simplified Poisson/Dixon-Coles model."""
+    if not stats_h or not stats_a:
+        return None, None, None
+    league_avg = 1.3  # goals per team per match, European average
+    att_h = stats_h["avg_gf"] / league_avg
+    def_h = stats_h["avg_ga"] / league_avg
+    att_a = stats_a["avg_gf"] / league_avg
+    def_a = stats_a["avg_ga"] / league_avg
+    lam_h = att_h * def_a * league_avg * 1.1  # home advantage factor
+    lam_a = att_a * def_h * league_avg
+    lam_h = max(0.1, min(lam_h, 6.0))
+    lam_a = max(0.1, min(lam_a, 6.0))
+    p1, px, p2 = 0.0, 0.0, 0.0
+    for i in range(8):
+        ph = exp(-lam_h) * lam_h**i / factorial(i)
+        for j in range(8):
+            pa = exp(-lam_a) * lam_a**j / factorial(j)
+            p  = ph * pa
+            if i > j:    p1 += p
+            elif i == j: px += p
+            else:        p2 += p
+    return round(p1 * 100, 1), round(px * 100, 1), round(p2 * 100, 1)
+
+
+def calc_ev(prob_pct, quota):
+    """Expected Value: >0 means the bet has value over the bookmaker margin."""
+    if not quota or quota <= 1 or not prob_pct:
+        return 0.0
+    return round((prob_pct / 100) * quota - 1, 3)
+
+
+def get_historical_accuracy():
+    """Returns accuracy by bet type from MongoDB, refreshed every 24h."""
+    global _accuracy_cache, _accuracy_cache_time
+    now = time.time()
+    if now - _accuracy_cache_time < 86400 and _accuracy_cache:
+        return _accuracy_cache
+    try:
+        pipeline = [
+            {"$match": {"result": {"$in": ["win", "loss"]}}},
+            {"$addFields": {"bet_type": {"$switch": {"branches": [
+                {"case": {"$eq": ["$value_bet", "1"]},  "then": "1"},
+                {"case": {"$eq": ["$value_bet", "2"]},  "then": "2"},
+                {"case": {"$eq": ["$value_bet", "X"]},  "then": "X"},
+                {"case": {"$in": ["$value_bet", ["1X","X2","12"]]}, "then": "dc"},
+                {"case": {"$regexMatch": {"input": "$value_bet", "regex": "^Over"}},  "then": "over"},
+                {"case": {"$regexMatch": {"input": "$value_bet", "regex": "^Under"}}, "then": "under"},
+                {"case": {"$in": ["$value_bet", ["GG","NG"]]}, "then": "ggng"},
+            ], "default": "other"}}}},
+            {"$group": {"_id": "$bet_type",
+                        "total": {"$sum": 1},
+                        "wins":  {"$sum": {"$cond": [{"$eq": ["$result","win"]}, 1, 0]}}}},
+            {"$match": {"total": {"$gte": 20}}},
+        ]
+        acc = {r["_id"]: round(r["wins"] / r["total"] * 100, 1)
+               for r in predictions_col.aggregate(pipeline)}
+        _accuracy_cache      = acc
+        _accuracy_cache_time = now
+        print(f"Calibrazione aggiornata da MongoDB: {acc}")
+        return acc
+    except Exception as e:
+        print(f"Errore calibrazione: {e}")
+        return {}
+
+
 def calibrate_confidence(raw_conf, giocata):
-    """Adjusts model confidence using historical hit rates from 425 resolved bets."""
+    """Adjusts model confidence using historical hit rates (dynamic from MongoDB)."""
     g = (giocata or "").lower().strip()
-    # Historical accuracy by bet type
-    if g == "1":                hist = 54.8
-    elif g == "2":              hist = 31.8
-    elif g == "x":              hist = 31.1
-    elif g in ("x2","1x","12"): hist = 27.6
-    else:                       hist = 35.0  # Over/Under/GG/NG: no reliable data yet
+    if g == "1":                  bet_type = "1"
+    elif g == "2":                bet_type = "2"
+    elif g == "x":                bet_type = "X"
+    elif g in ("1x","x2","12"):   bet_type = "dc"
+    elif "over" in g:             bet_type = "over"
+    elif "under" in g:            bet_type = "under"
+    elif g in ("gg","ng"):        bet_type = "ggng"
+    else:                         bet_type = "other"
+
+    static = {"1": 54.8, "2": 31.8, "X": 31.1, "dc": 27.6}
+    acc    = get_historical_accuracy()
+    hist   = acc.get(bet_type, static.get(bet_type, 35.0))
 
     adj = raw_conf
-    # 60-69 band is anomalously poor (23.8%), worse than <50 (26.6%) — pull it down
     if 60 <= raw_conf <= 69:
         adj = raw_conf - 12
-    # Cap overconfidence for historically weak bet types
     if hist < 35 and adj > 70:
         adj = 65
 
@@ -389,7 +565,7 @@ def search_team_matches(team_name):
 
 # ── Claude analysis ───────────────────────────────────────────
 
-def analyze_prematch(m, form_h, form_a, odds, stats_h=None, stats_a=None, h2h=None):
+def analyze_prematch(m, form_h, form_a, odds, stats_h=None, stats_a=None, h2h=None, ev_data=None):
     home       = m["teams"]["home"]["name"]
     away       = m["teams"]["away"]["name"]
     league     = m["league"]["name"].lower()
@@ -430,6 +606,26 @@ def analyze_prematch(m, form_h, form_a, odds, stats_h=None, stats_a=None, h2h=No
             f"clean sheet={s['clean_pct']}% no-gol={s['no_score_pct']}%"
         )
 
+    # Poisson estimated probabilities and EV
+    ev_info = ""
+    if ev_data:
+        p1e, pxe, p2e = ev_data.get("p1"), ev_data.get("px"), ev_data.get("p2")
+        if p1e is not None:
+            ev1  = calc_ev(p1e, q1)
+            evx  = calc_ev(pxe, qx)
+            ev2  = calc_ev(p2e, q2)
+            ev_info = (
+                f"PROB STIMATE (Poisson): 1={p1e}% X={pxe}% 2={p2e}%\n"
+                f"EXPECTED VALUE: 1={ev1:+.2f} X={evx:+.2f} 2={ev2:+.2f} "
+                f"(>0 = valore, <0 = sfavorevole)\n"
+            )
+
+    acc = get_historical_accuracy()
+    acc_lines = ""
+    if acc:
+        acc_lines = "ACCURATEZZA STORICA REALE (dal DB): " + \
+                    " | ".join(f"{k}={v}%" for k, v in acc.items()) + "\n"
+
     prompt = (
         f"Analizza {home} vs {away}.\n"
         f"IMPORTANZA: {importanza}\n"
@@ -440,14 +636,16 @@ def analyze_prematch(m, form_h, form_a, odds, stats_h=None, stats_a=None, h2h=No
         f"H2H (ultimi 5): {h2h or 'N/D'}\n"
         f"QUOTE 1X2: 1={q1} X={qx} 2={q2}\n"
         f"{prob_info}\n"
-        f"QUOTE ESTESE: {ext_odds}\n\n"
-        f"REGOLE BASATE SU DATI STORICI (425 previsioni risolte):\n"
-        f"- '1' ha 54.8% di successo storico: preferiscila quando la casa \xe8 favorita e in forma\n"
-        f"- '2' ha 31.8%: usala solo se l'ospite \xe8 chiaramente superiore\n"
-        f"- 'X', '1X', 'X2', '12': solo in caso di vera incertezza con valore nelle quote\n"
-        f"- Over/Under e GG/NG: usa le quote reali qui sopra e le stats gol per valutare\n"
-        f"- Assegna confidence 70+ solo con almeno 3 segnali concordanti (forma, stats, quote)\n"
-        f"- La fascia 60-69 \xe8 storicamente la meno affidabile: vai a 70+ o resta sotto 60\n\n"
+        f"{ev_info}"
+        f"QUOTE ESTESE: {ext_odds}\n"
+        f"{acc_lines}\n"
+        f"REGOLE:\n"
+        f"- Preferisci giocate con EV positivo (>0): indica valore reale rispetto al bookmaker\n"
+        f"- '1' favorita storica, ma solo se EV>0 e almeno 2 segnali concordanti\n"
+        f"- Evita giocate con EV molto negativo (<-0.15) a meno di segnali fortissimi\n"
+        f"- Over/Under: usa le stats gol per stimare l'esito e confronta con le quote\n"
+        f"- Assegna confidence 70+ solo con EV>0 e almeno 3 segnali concordanti\n"
+        f"- La fascia 60-69 \xe8 storicamente povera: vai a 70+ o resta sotto 60\n\n"
         f"Scegli LA MIGLIORE giocata tra: 1, X, 2, 1X, X2, 12, Over 1.5/2.5/3.5, Under 1.5/2.5/3.5, GG, NG.\n"
         'Rispondi SOLO con questo JSON: {"giocata":"es. 1 o Over 2.5 o GG","quota":X,"motivazione":"max 1 riga","confidence":X}'
     )
@@ -527,18 +725,28 @@ def run_analysis(matches, label="oggi"):
                 stats_a   = get_team_stats(away_id, league_id, season)
                 h2h       = get_h2h(home_id, away_id)
                 odds      = get_odds(home, away)
-                a_raw     = analyze_prematch(m, form_h, form_a, odds, stats_h, stats_a, h2h)
+                # Poisson EV
+                p1e, pxe, p2e = estimate_probs(stats_h, stats_a)
+                q1, qx, q2    = odds.get("1", 0), odds.get("X", 0), odds.get("2", 0)
+                ev_data = {"p1": p1e, "px": pxe, "p2": p2e} if p1e is not None else None
+                a_raw     = analyze_prematch(m, form_h, form_a, odds, stats_h, stats_a, h2h, ev_data)
                 a         = parse_json(a_raw)
                 giocata   = a.get("giocata", "")
-                # use real bookmaker quote; fall back to Claude's value
                 real_q    = get_real_quota(giocata, odds)
                 try:
                     quota_num = real_q if real_q else float(str(a.get("quota", 1.0)).replace(",", "."))
                 except Exception:
                     quota_num = 1.0
                 cal_conf  = calibrate_confidence(int(a.get("confidence", 0)), giocata)
+                # EV for the chosen bet
+                chosen_prob = None
+                g_low = giocata.lower().strip()
+                if g_low == "1" and p1e:   chosen_prob = p1e
+                elif g_low == "x" and pxe: chosen_prob = pxe
+                elif g_low == "2" and p2e: chosen_prob = p2e
+                ev_bet = calc_ev(chosen_prob, quota_num) if chosen_prob else None
                 blocks.append(format_match_block(m, a_raw, odds))
-                add_prediction({
+                pred = {
                     "date":       datetime.now().strftime("%Y-%m-%d"),
                     "match":      f"{home} vs {away}",
                     "league":     m["league"]["name"],
@@ -548,7 +756,10 @@ def run_analysis(matches, label="oggi"):
                     "quota":      quota_num,
                     "confidence": cal_conf,
                     "result":     "pending",
-                })
+                }
+                if ev_bet is not None:
+                    pred["ev"] = ev_bet
+                add_prediction(pred)
             except Exception as e:
                 print(f"Errore {home} vs {away}: {e}")
                 blocks.append(f"\u26a0\ufe0f Errore: {home} vs {away}\n")
@@ -592,7 +803,7 @@ def live_job():
     results_by_league = {}
 
     def analyze_one(m):
-        odds = get_odds(m["teams"]["home"]["name"], m["teams"]["away"]["name"])
+        odds = get_odds(m["teams"]["home"]["name"], m["teams"]["away"]["name"], live=True)
         return format_live_block(m, analyze_live(m, odds))
 
     with ThreadPoolExecutor(max_workers=5) as executor:
